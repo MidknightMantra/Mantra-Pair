@@ -12,8 +12,7 @@ app.use(express.json());
 app.use(cors());
 app.use(express.static('public')); // Serve the frontend
 
-// Store active intervals to clean them up
-const cleanups = new Map();
+// Store active intervals/cleanup jobs if needed (simplified here)
 
 app.get('/pair', async (req, res) => {
     const phone = req.query.phone;
@@ -44,28 +43,29 @@ app.get('/pair', async (req, res) => {
                 await delay(500); // Wait for creds to flush
                 
                 // THE GOLDEN EXTRACTION
-                // Read the creds.json, encode it, and send it back
                 const credsPath = path.join(sessionDir, 'creds.json');
-                const credsContent = await fs.readFile(credsPath);
-                const sessionID = Buffer.from(credsContent).toString('base64');
+                
+                if (fs.existsSync(credsPath)) {
+                    const credsContent = await fs.readFile(credsPath);
+                    // Encode to Base64
+                    const base64 = Buffer.from(credsContent).toString('base64');
+                    
+                    // ADD PREFIX HERE
+                    const sessionID = 'Mantra~' + base64; 
 
-                // Send success to frontend (if using websocket/SSE) or log it
-                // Since this is a simple HTTP req, we rely on the pairing code response first.
-                // NOTE: In a real prod app, you'd use socket.io to push this Session ID back to the UI.
-                // For simplicity here, we will just log it or save to a temporary endpoint the user polls.
-                
-                console.log(`[${id}] Session Generated!`);
-                
-                // Clean up logic would go here
+                    console.log(`[${id}] Session Generated: ${sessionID.substring(0, 20)}...`);
+                    
+                    // Note: In a real app with sockets, you'd emit this here.
+                    // But for this polling architecture, we just leave the file for the /check endpoint.
+                }
             }
 
             if (connection === 'close') {
                 const reason = lastDisconnect?.error?.output?.statusCode;
                 if (reason !== DisconnectReason.loggedOut) {
-                    // Don't reconnect for a generator, just fail
+                    // Don't reconnect for a generator, just fail/stop
                 }
-                // Cleanup folders on close
-                if (fs.existsSync(sessionDir)) fs.remove(sessionDir);
+                // Cleanup happens in the check endpoint or via a cron job in prod
             }
         });
 
@@ -79,15 +79,23 @@ app.get('/pair', async (req, res) => {
         // Polling endpoint for this specific ID
         app.get('/check/' + id, async (req, res) => {
             const credsPath = path.join(__dirname, 'temp', id, 'creds.json');
+            
+            // Check if creds exist
             if (fs.existsSync(credsPath)) {
-                // Check if connection is actually open (hacky check: file size > 100 bytes usually means full auth)
+                // Check if connection is actually open (file size check is a simple hack)
                 const stats = fs.statSync(credsPath);
-                if (stats.size > 200) {
+                if (stats.size > 100) { 
                     const content = fs.readFileSync(credsPath);
-                    const session = Buffer.from(content).toString('base64');
+                    const base64 = Buffer.from(content).toString('base64');
                     
-                    // Self Destruct
-                    await sock.end();
+                    // ADD PREFIX HERE TO RESPONSE
+                    const session = 'Mantra~' + base64;
+                    
+                    // Self Destruct the temp folder
+                    try {
+                        await sock.end();
+                    } catch (e) {} // ignore error if already closed
+                    
                     fs.remove(path.join(__dirname, 'temp', id));
                     
                     return res.json({ status: 'success', session: session });
