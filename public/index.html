@@ -5,78 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mantra Session Gen</title>
     <style>
-        body {
-            background-color: #0f0f13; /* MidKnight Dark */
-            color: #e0e0e0;
-            font-family: 'Courier New', monospace;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-        }
-        .container {
-            background: #1a1a20;
-            padding: 2rem;
-            border-radius: 12px;
-            box-shadow: 0 0 20px rgba(0, 255, 128, 0.1);
-            text-align: center;
-            width: 350px;
-        }
+        body { background-color: #0f0f13; color: #e0e0e0; font-family: monospace; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { background: #1a1a20; padding: 2rem; border-radius: 12px; text-align: center; width: 350px; border: 1px solid #333; }
         h1 { color: #00ff88; margin-bottom: 0.5rem; }
-        p { font-size: 0.9rem; color: #888; margin-bottom: 1.5rem; }
-        
-        input {
-            width: 100%;
-            padding: 12px;
-            background: #25252e;
-            border: 1px solid #333;
-            color: #fff;
-            border-radius: 6px;
-            margin-bottom: 1rem;
-            box-sizing: border-box;
-            text-align: center;
-            font-size: 1rem;
-        }
-        input:focus { outline: none; border-color: #00ff88; }
-        
-        button {
-            width: 100%;
-            padding: 12px;
-            background: #00ff88;
-            color: #000;
-            font-weight: bold;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: 0.2s;
-        }
-        button:hover { background: #00cc6a; }
-        
-        .result-area {
-            margin-top: 20px;
-            display: none;
-        }
-        .code-display {
-            font-size: 2rem;
-            letter-spacing: 5px;
-            font-weight: bold;
-            color: #fff;
-            margin: 20px 0;
-            animation: pulse 2s infinite;
-        }
-        @keyframes pulse { 0% { opacity: 0.8; } 50% { opacity: 1; } 100% { opacity: 0.8; } }
-        
-        .session-box {
-            word-break: break-all;
-            background: #000;
-            padding: 10px;
-            border: 1px solid #333;
-            font-size: 0.7rem;
-            max-height: 100px;
-            overflow-y: scroll;
-            margin-bottom: 10px;
-        }
+        input { width: 100%; padding: 12px; background: #25252e; border: 1px solid #333; color: #fff; border-radius: 6px; margin-bottom: 1rem; text-align: center; font-size: 1rem; }
+        button { width: 100%; padding: 12px; background: #00ff88; color: #000; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        .result-area { margin-top: 20px; display: none; }
+        .code-display { font-size: 2rem; letter-spacing: 5px; font-weight: bold; color: #fff; margin: 20px 0; border: 1px dashed #555; padding: 10px; }
+        .instructions { font-size: 0.8rem; color: #888; margin-top: 15px; line-height: 1.4; text-align: left; background: #111; padding: 10px; border-radius: 4px; }
     </style>
 </head>
 <body>
@@ -86,69 +23,57 @@
     <p>Session Generator</p>
 
     <div id="input-step">
-        <input type="text" id="phone" placeholder="Example: 254712345678">
-        <button onclick="getPairingCode()">GET PAIRING CODE</button>
+        <input type="text" id="phone" placeholder="2547XXXXXXXX">
+        <button id="btn" onclick="getPairingCode()">GET PAIRING CODE</button>
     </div>
 
     <div id="process-step" class="result-area">
-        <p>Enter this code on WhatsApp > Linked Devices > Link with Phone Number:</p>
+        <p>Enter this code on WhatsApp:</p>
         <div class="code-display" id="code">...</div>
-        <p id="status">Waiting for connection...</p>
-    </div>
+        
+        <div class="instructions">
+            <strong>Next Steps:</strong><br>
+            1. Open WhatsApp > Linked Devices.<br>
+            2. Tap "Link a Device" > "Link with phone number".<br>
+            3. Enter the code above.<br>
+            4. <strong>Check your Saved Messages</strong> for the Session ID.
+        </div>
 
-    <div id="final-step" class="result-area">
-        <p>SUCCESS! Copy your SESSION_ID:</p>
-        <div class="session-box" id="sessionResult"></div>
-        <button onclick="copySession()">COPY SESSION ID</button>
+        <br>
+        <button onclick="location.reload()" style="background: #333; color: #fff; font-size: 0.8rem;">Generate New Code</button>
     </div>
 </div>
 
 <script>
-    let checkInterval;
-
     async function getPairingCode() {
         const phone = document.getElementById('phone').value.replace(/[^0-9]/g, '');
         if (phone.length < 10) return alert("Invalid Phone Number");
 
-        document.getElementById('input-step').style.display = 'none';
-        document.getElementById('process-step').style.display = 'block';
+        const btn = document.getElementById('btn');
+        btn.innerText = "Generating...";
+        btn.disabled = true;
 
         try {
-            const res = await fetch(`/pair?phone=${phone}`);
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(), 60000); // 60s timeout
+
+            const res = await fetch(`/pair?phone=${phone}`, { signal: controller.signal });
             const data = await res.json();
             
             if (data.code) {
+                document.getElementById('input-step').style.display = 'none';
+                document.getElementById('process-step').style.display = 'block';
                 document.getElementById('code').innerText = data.code;
-                startPolling(data.id);
+                // No polling. The job is done.
             } else {
-                alert("Error getting code");
+                alert(data.error || "Error getting code");
                 location.reload();
             }
         } catch (e) {
             console.error(e);
-            alert("Server Error");
+            alert("Connection timed out or failed.");
+            location.reload();
         }
-    }
-
-    function startPolling(id) {
-        checkInterval = setInterval(async () => {
-            const res = await fetch(`/check/${id}`);
-            const data = await res.json();
-
-            if (data.status === 'success') {
-                clearInterval(checkInterval);
-                document.getElementById('process-step').style.display = 'none';
-                document.getElementById('final-step').style.display = 'block';
-                document.getElementById('sessionResult').innerText = data.session;
-            }
-        }, 2000);
-    }
-
-    function copySession() {
-        const text = document.getElementById('sessionResult').innerText;
-        navigator.clipboard.writeText(text).then(() => {
-            alert("Copied to clipboard!");
-        });
     }
 </script>
 
