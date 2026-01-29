@@ -4,6 +4,7 @@ const pino = require('pino');
 const fs = require('fs-extra');
 const path = require('path');
 const cors = require('cors');
+const QRCode = require('qrcode');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -116,7 +117,7 @@ function shouldRetry(id, reason) {
     return retryableReasons.includes(reason);
 }
 
-async function startMantraSession(id, phone, res = null) {
+async function startMantraSession(id, phone, res = null, method = 'code') {
     const sessionDir = path.join(__dirname, 'temp', id);
     const credsPath = path.join(sessionDir, 'creds.json');
 
@@ -138,7 +139,7 @@ async function startMantraSession(id, phone, res = null) {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
             },
-            printQRInTerminal: false,
+            printQRInTerminal: method === 'qr', // Enable QR terminal printing for QR mode
             logger: pino({ level: "silent" }),
             browser: browser,
             connectTimeoutMs: 90000, // Increased from 60s to 90s
@@ -147,7 +148,7 @@ async function startMantraSession(id, phone, res = null) {
             emitOwnEvents: true,
             retryRequestDelayMs: 2000,
             qrTimeout: 90000, // Add explicit QR/pairing timeout
-            usePairingCode: true,
+            usePairingCode: method === 'code', // Use pairing code only if method is 'code'
             syncFullHistory: false, // Disable history sync for faster connection
             markOnlineOnConnect: false, // Don't mark online immediately
             getMessage: async () => undefined // Prevent message fetch errors
@@ -162,6 +163,32 @@ async function startMantraSession(id, phone, res = null) {
 
             if (connection) {
                 log(id, `Connection status: ${connection}`, 'INFO');
+            }
+
+            // Handle QR code generation
+            if (qr && method === 'qr' && res && !res.headersSent) {
+                try {
+                    log(id, 'QR code received, generating image...', 'INFO');
+                    const qrImage = await QRCode.toDataURL(qr);
+
+                    log(id, 'QR code generated successfully', 'SUCCESS');
+                    res.json({
+                        success: true,
+                        method: 'qr',
+                        qr: qrImage,
+                        id: id,
+                        message: 'Scan this QR code with WhatsApp'
+                    });
+                } catch (err) {
+                    log(id, `QR generation failed: ${err.message}`, 'ERROR');
+                    if (!res.headersSent) {
+                        res.status(500).json({
+                            success: false,
+                            error: 'Failed to generate QR code',
+                            details: err.message
+                        });
+                    }
+                }
             }
 
             // Handle successful connection
@@ -260,7 +287,7 @@ _Powered by MidKnight-Core_`
 
                     await delay(RETRY_DELAY);
 
-                    startMantraSession(id, phone, null);
+                    startMantraSession(id, phone, null, method);
                 } else {
                     log(id, 'Connection failed permanently', 'ERROR');
                     await cleanupSession(id);
@@ -268,8 +295,8 @@ _Powered by MidKnight-Core_`
             }
         });
 
-        // Request pairing code for new sessions
-        if (res && !isRecovering) {
+        // Request pairing code for new sessions (only for 'code' method)
+        if (res && !isRecovering && method === 'code') {
             log(id, 'Initializing socket...', 'INFO');
 
             // Wait for socket to be ready (reduced delay)
@@ -323,6 +350,9 @@ _Powered by MidKnight-Core_`
                 message: 'Recovering previous session. This may take a moment...',
                 id: id
             });
+        } else if (res && method === 'qr') {
+            // For QR mode, just log that we're waiting for QR code
+            log(id, 'Waiting for QR code...', 'INFO');
         }
 
     } catch (err) {
@@ -344,26 +374,41 @@ _Powered by MidKnight-Core_`
 // API Routes
 app.get('/pair', async (req, res) => {
     const phone = req.query.phone;
+    const method = req.query.method || 'code'; // Default to pairing code
 
-    if (!phone) {
+    // Validate method
+    if (!['code', 'qr'].includes(method)) {
         return res.status(400).json({
             success: false,
-            error: 'Phone number is required'
+            error: 'Invalid method. Use "code" or "qr"'
         });
     }
 
-    const validation = validatePhone(phone);
-    if (!validation.valid) {
+    // Phone number only required for pairing code method
+    if (method === 'code' && !phone) {
         return res.status(400).json({
             success: false,
-            error: validation.error
+            error: 'Phone number is required for pairing code method'
         });
+    }
+
+    // Validate phone number if provided
+    if (phone) {
+        const validation = validatePhone(phone);
+        if (!validation.valid) {
+            return res.status(400).json({
+                success: false,
+                error: validation.error
+            });
+        }
     }
 
     const id = 'session_' + Date.now() + '_' + Math.random().toString(36).substring(7);
-    log(id, `New pairing request for ${validation.cleaned}`, 'INFO');
+    const phoneNumber = phone ? validatePhone(phone).cleaned : null;
 
-    startMantraSession(id, validation.cleaned, res);
+    log(id, `New ${method.toUpperCase()} pairing request${phoneNumber ? ' for ' + phoneNumber : ''}`, 'INFO');
+
+    startMantraSession(id, phoneNumber, res, method);
 });
 
 // Health check endpoint
