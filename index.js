@@ -1,5 +1,5 @@
 const express = require('express');
-const { default: makeWASocket, useMultiFileAuthState, delay, DisconnectReason, Browsers, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, delay, DisconnectReason, Browsers, makeCacheableSignalKeyStore, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs-extra');
 const path = require('path');
@@ -23,6 +23,12 @@ const LOG_LEVELS = {
 
 const log = (id, msg, level = 'INFO') => {
     console.log(`[${new Date().toLocaleTimeString()}] ${LOG_LEVELS[level]} [${id}] ${msg}`);
+};
+
+const respondIfPending = (res, status, payload) => {
+    if (res && !res.headersSent) {
+        res.status(status).json(payload);
+    }
 };
 
 // Track active connections and retry attempts
@@ -107,6 +113,11 @@ function shouldRetry(id, reason) {
         return false;
     }
 
+    // Some websocket failures surface without a mapped status code.
+    if (reason === undefined || reason === null) {
+        return true;
+    }
+
     const retryableReasons = [
         DisconnectReason.connectionClosed,
         DisconnectReason.connectionLost,
@@ -133,12 +144,29 @@ async function startMantraSession(id, phone, res = null, method = 'code') {
 
         const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
         const browser = Browsers.macOS("Chrome");
+        let version;
+
+        try {
+            if (typeof fetchLatestBaileysVersion === 'function') {
+                const latest = await fetchLatestBaileysVersion();
+                version = latest.version;
+
+                if (!latest.isLatest) {
+                    log(id, `Using latest WA version tuple: ${latest.version.join('.')}`, 'INFO');
+                }
+            } else {
+                log(id, 'Baileys version helper unavailable, using library default WA version', 'WARNING');
+            }
+        } catch (e) {
+            log(id, `Unable to fetch latest WA version, using library default: ${e.message}`, 'WARNING');
+        }
 
         const sock = makeWASocket({
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
             },
+            version,
             printQRInTerminal: method === 'qr', // Enable QR terminal printing for QR mode
             logger: pino({ level: "silent" }),
             browser: browser,
@@ -264,6 +292,11 @@ _Powered by MidKnight-Core_`
                 // Check if logged out
                 if (reason === DisconnectReason.loggedOut) {
                     log(id, 'Logged out by user', 'INFO');
+                    respondIfPending(res, 401, {
+                        success: false,
+                        error: 'Session logged out',
+                        details: 'WhatsApp ended this session. Start pairing again.'
+                    });
                     await cleanupSession(id);
                     return;
                 }
@@ -287,9 +320,14 @@ _Powered by MidKnight-Core_`
 
                     await delay(RETRY_DELAY);
 
-                    startMantraSession(id, phone, null, method);
+                    startMantraSession(id, phone, res && !res.headersSent ? res : null, method);
                 } else {
                     log(id, 'Connection failed permanently', 'ERROR');
+                    respondIfPending(res, 503, {
+                        success: false,
+                        error: 'Connection failed',
+                        details: `Socket closed after ${MAX_RETRIES} retries${reason ? ` (code ${reason})` : ''}`
+                    });
                     await cleanupSession(id);
                 }
             }
@@ -299,19 +337,12 @@ _Powered by MidKnight-Core_`
         if (res && !isRecovering && method === 'code') {
             log(id, 'Initializing socket...', 'INFO');
 
-            // Wait for socket to be ready (reduced delay)
-            await delay(2000);
+            // Wait for socket to be ready before requesting pairing code
+            await delay(5000);
 
             // Check if socket is still active
             if (!activeSockets.has(id)) {
-                log(id, 'Socket disconnected before pairing', 'ERROR');
-                if (!res.headersSent) {
-                    res.status(500).json({
-                        success: false,
-                        error: 'Connection failed',
-                        details: 'Socket closed prematurely'
-                    });
-                }
+                log(id, 'Socket rotated before pairing request, waiting for retry cycle', 'WARNING');
                 return;
             }
 
@@ -332,10 +363,12 @@ _Powered by MidKnight-Core_`
                 });
             } catch (err) {
                 log(id, `Code generation failed: ${err.message}`, 'ERROR');
-                await cleanupSession(id);
+                const reason = err?.output?.statusCode || err?.data?.statusCode || err?.statusCode;
 
-                if (!res.headersSent) {
-                    res.status(500).json({
+                // Let the connection close handler drive retry flow for transient failures.
+                if (!shouldRetry(id, reason)) {
+                    await cleanupSession(id);
+                    respondIfPending(res, 500, {
                         success: false,
                         error: 'Failed to generate pairing code',
                         details: err.message
