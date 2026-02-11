@@ -28,6 +28,7 @@
             --accent-amber: #ffb347;
             --accent-blue: #5ca9ff;
             --danger: #e11d48;
+            --page-bg-image: url('https://files.catbox.moe/ov9irq.jpg');
             --info-image: url('https://files.catbox.moe/q0q02r.jpg');
             --panel-image: url('https://files.catbox.moe/hfz2c3.jpg');
             --radius-lg: 24px;
@@ -41,9 +42,8 @@
             font-family: 'Sora', sans-serif;
             color: var(--ink-900);
             background:
-                radial-gradient(circle at 10% 15%, rgba(255, 122, 26, 0.26), transparent 38%),
-                radial-gradient(circle at 90% 80%, rgba(92, 169, 255, 0.22), transparent 44%),
-                linear-gradient(145deg, #fdf8ef 0%, #f3efe8 45%, #ebe6dd 100%);
+                linear-gradient(135deg, rgba(12, 17, 31, 0.54), rgba(12, 17, 31, 0.38)),
+                var(--page-bg-image) center center / cover no-repeat fixed;
             display: grid;
             place-items: center;
             padding: 1.2rem;
