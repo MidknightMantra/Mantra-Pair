@@ -198,42 +198,6 @@
                 var(--panel-image) center center / cover no-repeat;
         }
 
-        .preview-strip {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.7rem;
-            margin-bottom: 1.25rem;
-        }
-
-        .preview-tile {
-            position: relative;
-            min-height: 92px;
-            border-radius: 12px;
-            overflow: hidden;
-            border: 1px solid rgba(17, 26, 48, 0.18);
-            box-shadow: var(--shadow-soft);
-            background: rgba(255, 255, 255, 0.5);
-        }
-
-        .preview-tile img {
-            width: 100%;
-            height: 100%;
-            display: block;
-            object-fit: cover;
-        }
-
-        .preview-label {
-            position: absolute;
-            left: 0.5rem;
-            bottom: 0.5rem;
-            font-size: 0.66rem;
-            letter-spacing: 0.08em;
-            text-transform: uppercase;
-            color: #fff;
-            background: rgba(17, 26, 48, 0.72);
-            padding: 0.24rem 0.42rem;
-            border-radius: 999px;
-        }
 
         .mode-tabs {
             display: grid;
@@ -504,14 +468,6 @@
                 font-size: 0.74rem;
             }
 
-            .preview-strip {
-                gap: 0.5rem;
-            }
-
-            .preview-tile {
-                min-height: 74px;
-            }
-
             .code-text {
                 letter-spacing: 0.15em;
             }
@@ -554,17 +510,6 @@
             <div class="mode-tabs">
                 <button class="tab active" id="tab-code" type="button" onclick="switchTab('code')">Pairing Code</button>
                 <button class="tab" id="tab-qr" type="button" onclick="switchTab('qr')">QR Scan</button>
-            </div>
-
-            <div class="preview-strip">
-                <div class="preview-tile">
-                    <img src="https://files.catbox.moe/q0q02r.jpg" alt="Background image one">
-                    <span class="preview-label">Image 1</span>
-                </div>
-                <div class="preview-tile">
-                    <img src="https://files.catbox.moe/hfz2c3.jpg" alt="Background image two">
-                    <span class="preview-label">Image 2</span>
-                </div>
             </div>
 
             <div id="method-code">
