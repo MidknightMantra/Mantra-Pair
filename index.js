@@ -1,490 +1,542 @@
+const crypto = require('crypto');
+const { EventEmitter } = require('events');
+
 const express = require('express');
-const { default: makeWASocket, useMultiFileAuthState, delay, DisconnectReason, Browsers, makeCacheableSignalKeyStore, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
-const pino = require('pino');
-const fs = require('fs-extra');
-const path = require('path');
+const cookieParser = require('cookie-parser');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const QRCode = require('qrcode');
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+const fs = require('fs-extra');
+const path = require('path');
+const pino = require('pino');
 
-app.use(express.json());
-app.use(cors());
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  delay,
+  DisconnectReason,
+  Browsers,
+  makeCacheableSignalKeyStore,
+  fetchLatestBaileysVersion,
+} = require('@whiskeysockets/baileys');
+
+const app = express();
+
+const PORT = Number(process.env.PORT || 3000);
+const NODE_ENV = String(process.env.NODE_ENV || '');
+
+const PAIR_API_KEY = String(process.env.PAIR_API_KEY || '').trim();
+const API_KEY_COOKIE = 'mantra_pair_key';
+
+const CORS_ORIGINS = String(process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 30);
+
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 5 * 60_000);
+const SESSION_IDLE_TTL_MS = Number(process.env.SESSION_IDLE_TTL_MS || 2 * 60_000);
+const SESSION_CLEANUP_INTERVAL_MS = Number(process.env.SESSION_CLEANUP_INTERVAL_MS || 30_000);
+
+const MAX_RETRIES = Number(process.env.MAX_RETRIES || 3);
+const RETRY_DELAY_MS = Number(process.env.RETRY_DELAY_MS || 5_000);
+
+const EXPORT_ENCRYPTED = String(process.env.EXPORT_ENCRYPTED || 'true').toLowerCase() !== 'false';
+const EXPORT_LEGACY = String(process.env.EXPORT_LEGACY || 'false').toLowerCase() === 'true';
+const LOG_SESSION_EXPORTS = String(process.env.LOG_SESSION_EXPORTS || 'false').toLowerCase() === 'true';
+
+const SESSION_SECRET = String(process.env.SESSION_SECRET || '').trim();
+if (NODE_ENV === 'production' && EXPORT_ENCRYPTED && !SESSION_SECRET) {
+  throw new Error('SESSION_SECRET is required in production when EXPORT_ENCRYPTED=true');
+}
+
+app.use(helmet({ crossOriginEmbedderPolicy: false }));
+app.use(express.json({ limit: '128kb' }));
+app.use(cookieParser());
 app.use(express.static('public'));
 
-// Enhanced logging with colors and levels
-const LOG_LEVELS = {
+const apiLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, error: 'Rate limit exceeded. Try again shortly.' },
+});
+
+function log(id, msg, level = 'INFO') {
+  const levels = {
     INFO: '\x1b[36m[INFO]\x1b[0m',
     SUCCESS: '\x1b[32m[SUCCESS]\x1b[0m',
     WARNING: '\x1b[33m[WARNING]\x1b[0m',
-    ERROR: '\x1b[31m[ERROR]\x1b[0m'
-};
+    ERROR: '\x1b[31m[ERROR]\x1b[0m',
+  };
+  console.log(`[${new Date().toLocaleTimeString()}] ${levels[level] || levels.INFO} [${id}] ${msg}`);
+}
 
-const log = (id, msg, level = 'INFO') => {
-    console.log(`[${new Date().toLocaleTimeString()}] ${LOG_LEVELS[level]} [${id}] ${msg}`);
-};
-
-const respondIfPending = (res, status, payload) => {
-    if (res && !res.headersSent) {
-        res.status(status).json(payload);
-    }
-};
-
-// Track active connections and retry attempts
-const activeSockets = new Map();
-const sessionRetries = new Map();
-const MAX_RETRIES = 3;
-const RETRY_DELAY = 5000;
-
-// Graceful shutdown handler
-process.on('SIGINT', async () => {
-    log('SERVER', 'Shutting down gracefully...', 'WARNING');
-    for (const [id, sock] of activeSockets.entries()) {
-        try {
-            await sock.end();
-            log(id, 'Socket closed', 'INFO');
-        } catch (e) {
-            log(id, `Error closing socket: ${e.message}`, 'ERROR');
-        }
-    }
-    process.exit(0);
-});
-
-// Phone number validation
 function validatePhone(phone) {
-    const cleaned = phone.replace(/\D/g, '');
-    if (cleaned.length < 10 || cleaned.length > 15) {
-        return { valid: false, error: 'Phone number must be 10-15 digits' };
-    }
-    return { valid: true, cleaned };
+  const cleaned = String(phone || '').replace(/\D/g, '');
+  if (cleaned.length < 10 || cleaned.length > 15) {
+    return { valid: false, error: 'Phone number must be 10-15 digits' };
+  }
+  return { valid: true, cleaned };
 }
 
-// Enhanced session cleanup with retry tracking
-async function cleanupSession(id, removeFiles = true) {
-    const sessionDir = path.join(__dirname, 'temp', id);
-
-    if (activeSockets.has(id)) {
-        try {
-            const sock = activeSockets.get(id);
-            await sock.end();
-            log(id, 'Socket terminated', 'INFO');
-        } catch (e) {
-            log(id, `Error ending socket: ${e.message}`, 'WARNING');
-        }
-        activeSockets.delete(id);
-    }
-
-    sessionRetries.delete(id);
-
-    if (removeFiles) {
-        try {
-            await fs.remove(sessionDir);
-            log(id, 'Session files cleaned', 'INFO');
-        } catch (e) {
-            log(id, `Error removing session: ${e.message}`, 'WARNING');
-        }
-    }
+function corsOriginFn(origin, cb) {
+  if (!origin) return cb(null, true);
+  if (CORS_ORIGINS.length === 0) return cb(null, false);
+  return cb(null, CORS_ORIGINS.includes(origin));
 }
 
-// Check if session can be recovered
-async function canRecoverSession(sessionDir) {
-    const credsPath = path.join(sessionDir, 'creds.json');
-
-    if (!fs.existsSync(credsPath)) return false;
-
-    try {
-        const stats = fs.statSync(credsPath);
-        if (stats.size < 100) return false;
-
-        const creds = await fs.readJson(credsPath);
-        return creds && creds.me && creds.me.id;
-    } catch (e) {
-        return false;
-    }
-}
-
-// Enhanced retry logic
-function shouldRetry(id, reason) {
-    const retries = sessionRetries.get(id) || 0;
-
-    if (retries >= MAX_RETRIES) {
-        log(id, `Max retries (${MAX_RETRIES}) reached`, 'ERROR');
-        return false;
-    }
-
-    // Some websocket failures surface without a mapped status code.
-    if (reason === undefined || reason === null) {
-        return true;
-    }
-
-    const retryableReasons = [
-        DisconnectReason.connectionClosed,
-        DisconnectReason.connectionLost,
-        DisconnectReason.timedOut,
-        DisconnectReason.restartRequired
-    ];
-
-    return retryableReasons.includes(reason);
-}
-
-async function startMantraSession(id, phone, res = null, method = 'code') {
-    const sessionDir = path.join(__dirname, 'temp', id);
-    const credsPath = path.join(sessionDir, 'creds.json');
-
-    // Check for session recovery
-    const isRecovering = await canRecoverSession(sessionDir);
-
-    if (isRecovering) {
-        log(id, 'Recovering existing session...', 'INFO');
-    }
-
-    try {
-        await fs.ensureDir(sessionDir);
-
-        const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-        const browser = Browsers.macOS("Chrome");
-        let version;
-
-        try {
-            if (typeof fetchLatestBaileysVersion === 'function') {
-                const latest = await fetchLatestBaileysVersion();
-                version = latest.version;
-
-                if (!latest.isLatest) {
-                    log(id, `Using latest WA version tuple: ${latest.version.join('.')}`, 'INFO');
-                }
-            } else {
-                log(id, 'Baileys version helper unavailable, using library default WA version', 'WARNING');
-            }
-        } catch (e) {
-            log(id, `Unable to fetch latest WA version, using library default: ${e.message}`, 'WARNING');
-        }
-
-        const sock = makeWASocket({
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
-            },
-            version,
-            printQRInTerminal: method === 'qr', // Enable QR terminal printing for QR mode
-            logger: pino({ level: "silent" }),
-            browser: browser,
-            connectTimeoutMs: 90000, // Increased from 60s to 90s
-            defaultQueryTimeoutMs: 0,
-            keepAliveIntervalMs: 10000,
-            emitOwnEvents: true,
-            retryRequestDelayMs: 2000,
-            qrTimeout: 90000, // Add explicit QR/pairing timeout
-            usePairingCode: method === 'code', // Use pairing code only if method is 'code'
-            syncFullHistory: false, // Disable history sync for faster connection
-            markOnlineOnConnect: false, // Don't mark online immediately
-            getMessage: async () => undefined // Prevent message fetch errors
-        });
-
-        activeSockets.set(id, sock);
-        sock.ev.on('creds.update', saveCreds);
-
-        // Connection state handler
-        sock.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect, qr } = update;
-
-            if (connection) {
-                log(id, `Connection status: ${connection}`, 'INFO');
-            }
-
-            // Handle QR code generation
-            if (qr && method === 'qr' && res && !res.headersSent) {
-                try {
-                    log(id, 'QR code received, generating image...', 'INFO');
-                    const qrImage = await QRCode.toDataURL(qr);
-
-                    log(id, 'QR code generated successfully', 'SUCCESS');
-                    res.json({
-                        success: true,
-                        method: 'qr',
-                        qr: qrImage,
-                        id: id,
-                        message: 'Scan this QR code with WhatsApp'
-                    });
-                } catch (err) {
-                    log(id, `QR generation failed: ${err.message}`, 'ERROR');
-                    if (!res.headersSent) {
-                        res.status(500).json({
-                            success: false,
-                            error: 'Failed to generate QR code',
-                            details: err.message
-                        });
-                    }
-                }
-            }
-
-            // Handle successful connection
-            if (connection === 'open') {
-                log(id, 'Successfully connected!', 'SUCCESS');
-                sessionRetries.delete(id);
-
-                await delay(1500);
-
-                if (fs.existsSync(credsPath)) {
-                    try {
-                        const credsContent = await fs.readFile(credsPath);
-                        const base64 = Buffer.from(credsContent).toString('base64');
-                        const sessionID = 'Mantra~' + base64;
-                        const userJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-
-                        log(id, `Sending session to ${sock.user.name || userJid}`, 'INFO');
-
-                        // Send session ID
-                        await sock.sendMessage(userJid, { text: sessionID });
-                        await delay(800);
-
-                        // Send confirmation message
-                        await sock.sendMessage(userJid, {
-                            text: `╭━━━━━━━━━━━━━━━╮
-│ *MANTRA CONNECTED* ✅
-╰━━━━━━━━━━━━━━━╯
-
-✓ Session ID sent above
-✓ Keep it private and secure
-✓ Valid until you logout
-
-_Powered by MidKnight-Core_`
-                        });
-
-                        log(id, 'Session delivered successfully', 'SUCCESS');
-
-                        // Backup session to console
-                        console.log(`\n${'='.repeat(50)}`);
-                        console.log(`SESSION ID FOR ${sock.user.name || phone}`);
-                        console.log('='.repeat(50));
-                        console.log(sessionID);
-                        console.log('='.repeat(50) + '\n');
-
-                    } catch (e) {
-                        log(id, `Message send failed: ${e.message}`, 'ERROR');
-
-                        // Fallback: Log to console
-                        const credsContent = await fs.readFile(credsPath);
-                        const base64 = Buffer.from(credsContent).toString('base64');
-                        const sessionID = 'Mantra~' + base64;
-
-                        console.log(`\n${'='.repeat(50)}`);
-                        console.log('⚠️  FALLBACK SESSION ID');
-                        console.log('='.repeat(50));
-                        console.log(sessionID);
-                        console.log('='.repeat(50) + '\n');
-                    }
-
-                    await delay(5000);
-                    await sock.end();
-                    await cleanupSession(id);
-                }
-            }
-
-            // Handle connection close
-            if (connection === 'close') {
-                const reason = lastDisconnect?.error?.output?.statusCode;
-                const errorMsg = lastDisconnect?.error?.message || 'Unknown error';
-
-                log(id, `Connection closed: ${errorMsg} (Code: ${reason})`, 'WARNING');
-
-                // Check if logged out
-                if (reason === DisconnectReason.loggedOut) {
-                    log(id, 'Logged out by user', 'INFO');
-                    respondIfPending(res, 401, {
-                        success: false,
-                        error: 'Session logged out',
-                        details: 'WhatsApp ended this session. Start pairing again.'
-                    });
-                    await cleanupSession(id);
-                    return;
-                }
-
-                // Handle retries
-                if (shouldRetry(id, reason)) {
-                    const retries = sessionRetries.get(id) || 0;
-                    sessionRetries.set(id, retries + 1);
-
-                    log(id, `Retry ${retries + 1}/${MAX_RETRIES} in ${RETRY_DELAY / 1000}s...`, 'WARNING');
-
-                    // Cleanup current socket without removing files
-                    if (activeSockets.has(id)) {
-                        try {
-                            await sock.end();
-                        } catch (e) {
-                            log(id, `Error ending socket during retry: ${e.message}`, 'WARNING');
-                        }
-                        activeSockets.delete(id);
-                    }
-
-                    await delay(RETRY_DELAY);
-
-                    startMantraSession(id, phone, res && !res.headersSent ? res : null, method);
-                } else {
-                    log(id, 'Connection failed permanently', 'ERROR');
-                    respondIfPending(res, 503, {
-                        success: false,
-                        error: 'Connection failed',
-                        details: `Socket closed after ${MAX_RETRIES} retries${reason ? ` (code ${reason})` : ''}`
-                    });
-                    await cleanupSession(id);
-                }
-            }
-        });
-
-        // Request pairing code for new sessions (only for 'code' method)
-        if (res && !isRecovering && method === 'code') {
-            log(id, 'Initializing socket...', 'INFO');
-
-            // Wait for socket to be ready before requesting pairing code
-            await delay(5000);
-
-            // Check if socket is still active
-            if (!activeSockets.has(id)) {
-                log(id, 'Socket rotated before pairing request, waiting for retry cycle', 'WARNING');
-                return;
-            }
-
-            log(id, 'Requesting pairing code...', 'INFO');
-
-            try {
-                const code = await sock.requestPairingCode(phone);
-                const formattedCode = code?.match(/.{1,4}/g)?.join("-") || code;
-
-                log(id, `Pairing code generated: ${formattedCode}`, 'SUCCESS');
-
-                res.json({
-                    success: true,
-                    code: formattedCode,
-                    id: id,
-                    phone: phone,
-                    expiresIn: 60
-                });
-            } catch (err) {
-                log(id, `Code generation failed: ${err.message}`, 'ERROR');
-                const reason = err?.output?.statusCode || err?.data?.statusCode || err?.statusCode;
-
-                // Let the connection close handler drive retry flow for transient failures.
-                if (!shouldRetry(id, reason)) {
-                    await cleanupSession(id);
-                    respondIfPending(res, 500, {
-                        success: false,
-                        error: 'Failed to generate pairing code',
-                        details: err.message
-                    });
-                }
-            }
-        } else if (res && isRecovering) {
-            log(id, 'Using recovered session', 'INFO');
-            res.json({
-                success: true,
-                status: 'recovering',
-                message: 'Recovering previous session. This may take a moment...',
-                id: id
-            });
-        } else if (res && method === 'qr') {
-            // For QR mode, just log that we're waiting for QR code
-            log(id, 'Waiting for QR code...', 'INFO');
-        }
-
-    } catch (err) {
-        log(id, `Fatal error: ${err.message}`, 'ERROR');
-        console.error(err.stack);
-
-        await cleanupSession(id);
-
-        if (res && !res.headersSent) {
-            res.status(500).json({
-                success: false,
-                error: 'Internal server error',
-                details: err.message
-            });
-        }
-    }
-}
-
-// API Routes
-app.get('/pair', async (req, res) => {
-    const phone = req.query.phone;
-    const method = req.query.method || 'code'; // Default to pairing code
-
-    // Validate method
-    if (!['code', 'qr'].includes(method)) {
-        return res.status(400).json({
-            success: false,
-            error: 'Invalid method. Use "code" or "qr"'
-        });
-    }
-
-    // Phone number only required for pairing code method
-    if (method === 'code' && !phone) {
-        return res.status(400).json({
-            success: false,
-            error: 'Phone number is required for pairing code method'
-        });
-    }
-
-    // Validate phone number if provided
-    if (phone) {
-        const validation = validatePhone(phone);
-        if (!validation.valid) {
-            return res.status(400).json({
-                success: false,
-                error: validation.error
-            });
-        }
-    }
-
-    const id = 'session_' + Date.now() + '_' + Math.random().toString(36).substring(7);
-    const phoneNumber = phone ? validatePhone(phone).cleaned : null;
-
-    log(id, `New ${method.toUpperCase()} pairing request${phoneNumber ? ' for ' + phoneNumber : ''}`, 'INFO');
-
-    startMantraSession(id, phoneNumber, res, method);
+const apiCors = cors({
+  origin: corsOriginFn,
+  credentials: true,
 });
 
-// Health check endpoint
+function isAuthed(req) {
+  if (!PAIR_API_KEY) return true;
+  const headerKey = String(req.get('x-api-key') || '').trim();
+  if (headerKey && headerKey === PAIR_API_KEY) return true;
+  const cookieKey = String((req.cookies && req.cookies[API_KEY_COOKIE]) || '').trim();
+  return Boolean(cookieKey && cookieKey === PAIR_API_KEY);
+}
+
+function requireAuth(req, res, next) {
+  if (isAuthed(req)) return next();
+  return res.status(401).json({ success: false, error: 'Unauthorized' });
+}
+
+function b64url(buf) {
+  return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function exportSessionTokens(credsContent) {
+  const base64Creds = Buffer.from(credsContent).toString('base64');
+  const tokens = [];
+
+  if (EXPORT_ENCRYPTED) {
+    if (!SESSION_SECRET) throw new Error('SESSION_SECRET not configured');
+    const key = crypto.scryptSync(SESSION_SECRET, 'mantra-pair', 32);
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+
+    const payload = Buffer.from(JSON.stringify({ v: 1, creds: base64Creds, ts: Date.now() }), 'utf8');
+    const ciphertext = Buffer.concat([cipher.update(payload), cipher.final()]);
+    const tag = cipher.getAuthTag();
+
+    const packed = Buffer.concat([iv, tag, ciphertext]);
+    tokens.push(`MantraEnc~${b64url(packed)}`);
+  }
+
+  if (EXPORT_LEGACY) {
+    tokens.push(`Mantra~${base64Creds}`);
+  }
+
+  return tokens;
+}
+
+function safeSelfJid(sock) {
+  const id = String(sock && sock.user && sock.user.id ? sock.user.id : '');
+  const left = id.split('@')[0] || '';
+  const number = (left.split(':')[0] || '').trim();
+  if (!number) return null;
+  return `${number}@s.whatsapp.net`;
+}
+
+function shouldRetry(retries, reason) {
+  if (retries >= MAX_RETRIES) return false;
+  if (reason === undefined || reason === null) return true;
+  const retryable = [
+    DisconnectReason.connectionClosed,
+    DisconnectReason.connectionLost,
+    DisconnectReason.timedOut,
+    DisconnectReason.restartRequired,
+  ];
+  return retryable.includes(reason);
+}
+
+function makeSessionId() {
+  return `session_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+}
+
+function sessionDirFor(id) {
+  return path.join(__dirname, 'temp', id);
+}
+
+const sessions = new Map();
+
+async function cleanupSession(session, removeFiles = true) {
+  if (!session) return;
+
+  if (session.ttlTimer) clearTimeout(session.ttlTimer);
+  if (session.idleTimer) clearTimeout(session.idleTimer);
+
+  if (session.sock) {
+    try {
+      await session.sock.end();
+    } catch (_) {
+      // ignore
+    }
+    session.sock = null;
+  }
+
+  if (removeFiles) {
+    try {
+      await fs.remove(session.sessionDir);
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  sessions.delete(session.id);
+  log(session.id, 'Session cleaned', 'INFO');
+}
+
+function setIdleTimer(session) {
+  if (session.idleTimer) clearTimeout(session.idleTimer);
+  session.idleTimer = setTimeout(() => {
+    session.emitter.emit('session_error', { message: 'Session expired due to inactivity.' });
+    cleanupSession(session).catch(() => {});
+  }, SESSION_IDLE_TTL_MS);
+}
+
+function emitStatus(session, status, extra) {
+  session.status = status;
+  session.lastEventAt = Date.now();
+  session.emitter.emit('status', { status, ...(extra || {}) });
+}
+
+async function startSession(session) {
+  await fs.ensureDir(session.sessionDir);
+  emitStatus(session, 'starting');
+  setIdleTimer(session);
+
+  const { state, saveCreds } = await useMultiFileAuthState(session.sessionDir);
+  const browser = Browsers.macOS('Chrome');
+
+  let version;
+  try {
+    if (typeof fetchLatestBaileysVersion === 'function') {
+      const latest = await fetchLatestBaileysVersion();
+      version = latest.version;
+    }
+  } catch (e) {
+    log(session.id, `Unable to fetch latest WA version tuple: ${e.message}`, 'WARNING');
+  }
+
+  const sock = makeWASocket({
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
+    },
+    version,
+    printQRInTerminal: false,
+    logger: pino({ level: 'silent' }),
+    browser,
+    connectTimeoutMs: 90_000,
+    defaultQueryTimeoutMs: 0,
+    keepAliveIntervalMs: 10_000,
+    emitOwnEvents: true,
+    retryRequestDelayMs: 2_000,
+    qrTimeout: 90_000,
+    usePairingCode: session.method === 'code',
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+    getMessage: async () => undefined,
+  });
+
+  session.sock = sock;
+  sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('connection.update', async (update) => {
+    const connection = update.connection;
+    const lastDisconnect = update.lastDisconnect;
+    const qr = update.qr;
+
+    if (connection) {
+      emitStatus(session, connection);
+      log(session.id, `Connection status: ${connection}`, 'INFO');
+    }
+
+    if (qr && session.method === 'qr') {
+      try {
+        const qrImage = await QRCode.toDataURL(qr);
+        session.lastQr = qrImage;
+        session.lastEventAt = Date.now();
+        session.emitter.emit('qr', { qr: qrImage });
+        setIdleTimer(session);
+      } catch (e) {
+        session.emitter.emit('session_error', { message: `Failed to generate QR: ${e.message}` });
+      }
+    }
+
+    if (connection === 'open') {
+      session.retries = 0;
+      log(session.id, 'Successfully connected', 'SUCCESS');
+      session.emitter.emit('connected', { ok: true });
+
+      await delay(1200);
+      const credsPath = path.join(session.sessionDir, 'creds.json');
+      if (!fs.existsSync(credsPath)) {
+        session.emitter.emit('session_error', { message: 'creds.json not found after connect' });
+        await cleanupSession(session);
+        return;
+      }
+
+      try {
+        const credsContent = await fs.readFile(credsPath);
+        const tokens = exportSessionTokens(credsContent);
+        const userJid = safeSelfJid(sock);
+        if (!userJid) throw new Error('Could not resolve self JID');
+
+        for (const t of tokens) {
+          await sock.sendMessage(userJid, { text: t });
+          await delay(400);
+        }
+
+        await sock.sendMessage(userJid, {
+          text:
+            '╭━━━━━━━━━━━━━━━╮\n' +
+            '│ *MANTRA CONNECTED* ✅\n' +
+            '╰━━━━━━━━━━━━━━━╯\n\n' +
+            '✓ Session sent above\n' +
+            '✓ Keep it private and secure\n\n' +
+            '_Powered by Mantra Inc_',
+        });
+
+        session.emitter.emit('exported', { encrypted: EXPORT_ENCRYPTED, legacy: EXPORT_LEGACY });
+
+        if (LOG_SESSION_EXPORTS) {
+          log(session.id, `Exported session tokens: ${tokens.map((t) => t.slice(0, 18)).join(', ')}...`, 'WARNING');
+        }
+      } catch (e) {
+        session.emitter.emit('session_error', { message: `Failed to export session: ${e.message}` });
+      } finally {
+        await delay(2500);
+        await cleanupSession(session);
+      }
+    }
+
+    if (connection === 'close') {
+      const reason = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output
+        ? lastDisconnect.error.output.statusCode
+        : undefined;
+      const errorMsg = lastDisconnect && lastDisconnect.error && lastDisconnect.error.message
+        ? lastDisconnect.error.message
+        : 'Unknown error';
+
+      log(session.id, `Connection closed: ${errorMsg}${reason ? ` (code ${reason})` : ''}`, 'WARNING');
+
+      if (reason === DisconnectReason.loggedOut) {
+        session.emitter.emit('session_error', { message: 'Logged out by WhatsApp. Start pairing again.' });
+        await cleanupSession(session);
+        return;
+      }
+
+      if (shouldRetry(session.retries || 0, reason)) {
+        session.retries = (session.retries || 0) + 1;
+        session.emitter.emit('status', { status: 'retrying', retry: session.retries, maxRetries: MAX_RETRIES });
+        await delay(RETRY_DELAY_MS);
+        startSession(session).catch((e) => {
+          session.emitter.emit('session_error', { message: `Retry failed: ${e.message}` });
+          cleanupSession(session).catch(() => {});
+        });
+      } else {
+        session.emitter.emit('session_error', {
+          message: `Connection failed after ${MAX_RETRIES} retries${reason ? ` (code ${reason})` : ''}`,
+        });
+        await cleanupSession(session);
+      }
+    }
+  });
+
+  if (session.method === 'code') {
+    emitStatus(session, 'requesting_code');
+    await delay(4500);
+    if (session.sock !== sock) return;
+    try {
+      const code = await sock.requestPairingCode(session.phone);
+      const formatted = code && code.match(/.{1,4}/g) ? code.match(/.{1,4}/g).join('-') : code;
+      session.lastCode = formatted;
+      session.lastEventAt = Date.now();
+      session.emitter.emit('code', { code: formatted, expiresIn: 60 });
+      setIdleTimer(session);
+    } catch (e) {
+      session.emitter.emit('session_error', { message: `Failed to generate pairing code: ${e.message}` });
+    }
+  } else {
+    emitStatus(session, 'waiting_qr');
+    setIdleTimer(session);
+  }
+}
+
+process.on('SIGINT', async () => {
+  log('SERVER', 'Shutting down gracefully...', 'WARNING');
+  for (const s of sessions.values()) {
+    await cleanupSession(s).catch(() => {});
+  }
+  process.exit(0);
+});
+
+async function cleanupOldTempOnStartup() {
+  const tempDir = path.join(__dirname, 'temp');
+  await fs.ensureDir(tempDir);
+  const files = await fs.readdir(tempDir);
+  for (const file of files) {
+    const filePath = path.join(tempDir, file);
+    try {
+      const stats = await fs.stat(filePath);
+      const age = Date.now() - stats.mtimeMs;
+      if (age > 60 * 60_000) await fs.remove(filePath);
+    } catch (_) {
+      // ignore
+    }
+  }
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const s of sessions.values()) {
+    if (now - (s.createdAt || now) > SESSION_TTL_MS) {
+      s.emitter.emit('session_error', { message: 'Session expired.' });
+      cleanupSession(s).catch(() => {});
+    }
+  }
+}, SESSION_CLEANUP_INTERVAL_MS).unref();
+
+app.get('/pair', apiLimiter, apiCors, (req, res) => {
+  res.status(405).json({ success: false, error: 'Method not allowed. Use POST /pair.' });
+});
+
+app.post('/auth', apiLimiter, apiCors, (req, res) => {
+  if (!PAIR_API_KEY) return res.status(204).end();
+  const key = String((req.body && req.body.apiKey) || '').trim();
+  if (!key || key !== PAIR_API_KEY) return res.status(401).json({ success: false, error: 'Invalid access key' });
+
+  res.cookie(API_KEY_COOKIE, key, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: NODE_ENV === 'production',
+    maxAge: 6 * 60 * 60_000,
+  });
+  return res.status(204).end();
+});
+
+app.post('/pair', apiLimiter, apiCors, requireAuth, async (req, res) => {
+  const method = String((req.body && req.body.method) || 'code');
+  const phone = req.body ? req.body.phone : undefined;
+
+  if (!['code', 'qr'].includes(method)) {
+    return res.status(400).json({ success: false, error: 'Invalid method. Use "code" or "qr".' });
+  }
+
+  let cleanedPhone = null;
+  if (method === 'code') {
+    const v = validatePhone(phone);
+    if (!v.valid) return res.status(400).json({ success: false, error: v.error });
+    cleanedPhone = v.cleaned;
+  }
+
+  const id = makeSessionId();
+  const session = {
+    id,
+    method,
+    phone: cleanedPhone,
+    createdAt: Date.now(),
+    lastEventAt: Date.now(),
+    sessionDir: sessionDirFor(id),
+    emitter: new EventEmitter(),
+    retries: 0,
+    status: 'created',
+    lastQr: null,
+    lastCode: null,
+    sock: null,
+    ttlTimer: null,
+    idleTimer: null,
+  };
+
+  sessions.set(id, session);
+  session.ttlTimer = setTimeout(() => {
+    session.emitter.emit('session_error', { message: 'Session expired.' });
+    cleanupSession(session).catch(() => {});
+  }, SESSION_TTL_MS);
+
+  log(id, `New ${method.toUpperCase()} pairing request${cleanedPhone ? ` for ${cleanedPhone}` : ''}`, 'INFO');
+
+  startSession(session).catch((e) => {
+    session.emitter.emit('session_error', { message: `Failed to start session: ${e.message}` });
+    cleanupSession(session).catch(() => {});
+  });
+
+  return res.json({ success: true, id, method, status: 'starting' });
+});
+
+app.get('/pair/events/:id', apiLimiter, apiCors, requireAuth, (req, res) => {
+  const id = String(req.params.id || '');
+  const session = sessions.get(id);
+  if (!session) return res.status(404).json({ success: false, error: 'Session not found' });
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+  });
+
+  const send = (event, data) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  send('status', { status: session.status || 'starting' });
+  if (session.lastCode) send('code', { code: session.lastCode, expiresIn: 60 });
+  if (session.lastQr) send('qr', { qr: session.lastQr });
+
+  const onStatus = (p) => send('status', p);
+  const onCode = (p) => send('code', p);
+  const onQr = (p) => send('qr', p);
+  const onConnected = (p) => send('connected', p);
+  const onExported = (p) => send('exported', p);
+  const onError = (p) => send('error', p);
+
+  session.emitter.on('status', onStatus);
+  session.emitter.on('code', onCode);
+  session.emitter.on('qr', onQr);
+  session.emitter.on('connected', onConnected);
+  session.emitter.on('exported', onExported);
+  session.emitter.on('session_error', onError);
+
+  const keepAlive = setInterval(() => {
+    res.write('event: ping\n');
+    res.write('data: {}\n\n');
+  }, 15_000);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    session.emitter.off('status', onStatus);
+    session.emitter.off('code', onCode);
+    session.emitter.off('qr', onQr);
+    session.emitter.off('connected', onConnected);
+    session.emitter.off('exported', onExported);
+    session.emitter.off('session_error', onError);
+  });
+});
+
 app.get('/health', (req, res) => {
-    res.json({
-        status: 'healthy',
-        activeSessions: activeSockets.size,
-        uptime: process.uptime()
-    });
+  res.json({ status: 'healthy', activeSessions: sessions.size, uptime: process.uptime() });
 });
-
-// Cleanup old temp files on startup
-async function cleanupOldSessions() {
-    const tempDir = path.join(__dirname, 'temp');
-
-    try {
-        await fs.ensureDir(tempDir);
-        const files = await fs.readdir(tempDir);
-
-        for (const file of files) {
-            const filePath = path.join(tempDir, file);
-            const stats = await fs.stat(filePath);
-            const age = Date.now() - stats.mtimeMs;
-
-            // Remove sessions older than 1 hour
-            if (age > 3600000) {
-                await fs.remove(filePath);
-                console.log(`Cleaned old session: ${file}`);
-            }
-        }
-    } catch (e) {
-        console.error('Cleanup error:', e.message);
-    }
-}
 
 app.listen(PORT, async () => {
-    console.log('\n' + '='.repeat(50));
-    console.log('🚀 Mantra-Pair Server Started');
-    console.log('='.repeat(50));
-    console.log(`📡 Port: ${PORT}`);
-    console.log(`🔗 Endpoint: http://localhost:${PORT}/pair?phone=YOUR_NUMBER`);
-    console.log(`❤️  Health: http://localhost:${PORT}/health`);
-    console.log('='.repeat(50) + '\n');
+  await cleanupOldTempOnStartup();
 
-    await cleanupOldSessions();
+  console.log('\n' + '='.repeat(56));
+  console.log('Mantra-Pair Server Started');
+  console.log('='.repeat(56));
+  console.log(`Port: ${PORT}`);
+  console.log(`Health: http://localhost:${PORT}/health`);
+  console.log('Pair: POST /pair');
+  console.log('Events: GET /pair/events/:id');
+  console.log('='.repeat(56) + '\n');
 });

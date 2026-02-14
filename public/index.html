@@ -7,6 +7,9 @@
     <title>Mantra Pair Console</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preload" as="image" href="/assets/ov9irq.jpg">
+    <link rel="preload" as="image" href="/assets/q0q02r.jpg">
+    <link rel="preload" as="image" href="/assets/hfz2c3.jpg">
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
         rel="stylesheet">
     <style>
@@ -28,9 +31,9 @@
             --accent-amber: #ffb347;
             --accent-blue: #5ca9ff;
             --danger: #e11d48;
-            --page-bg-image: url('https://files.catbox.moe/ov9irq.jpg');
-            --info-image: url('https://files.catbox.moe/q0q02r.jpg');
-            --panel-image: url('https://files.catbox.moe/hfz2c3.jpg');
+            --page-bg-image: url('/assets/ov9irq.jpg');
+            --info-image: url('/assets/q0q02r.jpg');
+            --panel-image: url('/assets/hfz2c3.jpg');
             --radius-lg: 24px;
             --radius-md: 14px;
             --shadow-strong: 0 28px 60px rgba(10, 15, 29, 0.28);
@@ -41,6 +44,7 @@
             min-height: 100vh;
             font-family: 'Sora', sans-serif;
             color: var(--ink-900);
+            background-color: var(--ink-950);
             background:
                 linear-gradient(135deg, rgba(12, 17, 31, 0.54), rgba(12, 17, 31, 0.38)),
                 var(--page-bg-image) center center / cover no-repeat fixed;
@@ -254,6 +258,28 @@
             margin-bottom: 1rem;
         }
 
+        .status-banner {
+            display: none;
+            border-radius: 14px;
+            border: 1px solid rgba(17, 26, 48, 0.14);
+            background: rgba(255, 255, 255, 0.72);
+            padding: 0.85rem 0.95rem;
+            color: #243353;
+            font-size: 0.86rem;
+            line-height: 1.55;
+            margin-bottom: 1rem;
+        }
+
+        .status-banner.is-on {
+            display: block;
+        }
+
+        .status-banner strong {
+            font-family: 'Space Mono', monospace;
+            font-size: 0.86rem;
+            color: #0f1b38;
+        }
+
         .label {
             font-size: 0.78rem;
             letter-spacing: 0.09em;
@@ -439,6 +465,10 @@
                 grid-template-columns: 1fr;
             }
 
+            body {
+                background-attachment: scroll;
+            }
+
             .info-panel {
                 border-bottom: 1px solid rgba(255, 255, 255, 0.1);
                 padding: 2rem 1.4rem;
@@ -470,6 +500,21 @@
 
             .code-text {
                 letter-spacing: 0.15em;
+            }
+        }
+
+        @media (prefers-reduced-data: reduce) {
+            :root {
+                --page-bg-image: none;
+                --info-image: none;
+                --panel-image: none;
+            }
+
+            body {
+                background:
+                    linear-gradient(135deg, rgba(12, 17, 31, 0.86), rgba(12, 17, 31, 0.78)),
+                    radial-gradient(circle at 10% 10%, rgba(255, 179, 71, 0.18), transparent 60%),
+                    radial-gradient(circle at 90% 80%, rgba(92, 169, 255, 0.14), transparent 55%);
             }
         }
     </style>
@@ -512,6 +557,16 @@
                 <button class="tab" id="tab-qr" type="button" onclick="switchTab('qr')">QR Scan</button>
             </div>
 
+            <div class="input-group">
+                <label class="label" for="apiKey">Access Key (If Enabled)</label>
+                <input type="password" id="apiKey" placeholder="Set PAIR_API_KEY on Railway to enable" autocomplete="off">
+            </div>
+
+            <div class="status-banner" id="statusBanner">
+                <div><strong>Status</strong>: <span id="statusText">Idle</span></div>
+                <div id="statusHint" style="margin-top:0.35rem;color:#4d5771;"></div>
+            </div>
+
             <div id="method-code">
                 <h2 class="panel-title">Pair by Phone Number</h2>
                 <p class="panel-note">Enter your full phone number with country code. Numbers only.</p>
@@ -528,7 +583,7 @@
 
             <div id="method-qr" class="is-hidden">
                 <h2 class="panel-title">Pair by QR</h2>
-                <p class="panel-note">Generate a temporary QR code and scan it from WhatsApp Linked Devices. This can take up to 90 seconds.</p>
+                <p class="panel-note">Generate a temporary QR code and scan it from WhatsApp Linked Devices. The QR can refresh automatically.</p>
 
                 <button class="action-btn" id="qr-btn" type="button" onclick="getQRCode()">
                     <span id="qr-btn-text">Generate QR Code</span>
@@ -572,6 +627,8 @@
     <script>
         let currentMethod = 'code';
         const REQUEST_TIMEOUT_MS = 130000;
+        let currentSessionId = null;
+        let eventSource = null;
 
         function switchTab(method) {
             currentMethod = method;
@@ -584,6 +641,9 @@
 
             document.getElementById('result-code').style.display = 'none';
             document.getElementById('result-qr').style.display = 'none';
+
+            setStatus('Idle', '');
+            teardownEvents();
         }
 
         function setCodeLoading(isLoading) {
@@ -602,6 +662,17 @@
             label.innerHTML = isLoading ? '<span class="loading"></span>Generating...' : 'Generate QR Code';
         }
 
+        function setStatus(text, hint) {
+            const banner = document.getElementById('statusBanner');
+            const statusText = document.getElementById('statusText');
+            const statusHint = document.getElementById('statusHint');
+
+            const show = Boolean(text && text !== 'Idle');
+            banner.classList.toggle('is-on', show);
+            statusText.textContent = text || 'Idle';
+            statusHint.textContent = hint || '';
+        }
+
         async function safeJson(res) {
             try {
                 return await res.json();
@@ -610,18 +681,97 @@
             }
         }
 
-        async function fetchWithTimeout(url) {
+        async function fetchWithTimeout(url, init) {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
             try {
                 return await fetch(url, {
+                    ...(init || {}),
                     signal: controller.signal,
+                    credentials: (init && init.credentials) ? init.credentials : 'same-origin',
                     cache: 'no-store'
                 });
             } finally {
                 clearTimeout(timeoutId);
             }
+        }
+
+        function teardownEvents() {
+            if (eventSource) {
+                try { eventSource.close(); } catch (e) { }
+                eventSource = null;
+            }
+            currentSessionId = null;
+        }
+
+        async function ensureAuthCookie() {
+            const apiKey = document.getElementById('apiKey').value;
+            const res = await fetchWithTimeout('/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apiKey })
+            });
+
+            if (res.status === 204) return;
+            const data = await safeJson(res);
+            throw new Error(data.error || 'Access key required or invalid.');
+        }
+
+        function listenToSession(id) {
+            teardownEvents();
+            currentSessionId = id;
+
+            eventSource = new EventSource(`/pair/events/${encodeURIComponent(id)}`);
+
+            eventSource.addEventListener('status', (ev) => {
+                try {
+                    const data = JSON.parse(ev.data || '{}');
+                    const status = data.status || 'working';
+                    let hint = '';
+                    if (status === 'requesting_code') hint = 'Waiting for pairing code...';
+                    if (status === 'waiting_qr') hint = 'Waiting for QR from WhatsApp...';
+                    if (status === 'open') hint = 'Connected. Sending session to your WhatsApp...';
+                    if (status === 'retrying') hint = `Retrying (${data.retry || 0}/${data.maxRetries || 0})...`;
+                    setStatus(status, hint);
+                } catch (e) { }
+            });
+
+            eventSource.addEventListener('code', (ev) => {
+                const data = JSON.parse(ev.data || '{}');
+                if (!data.code) return;
+                document.getElementById('method-code').style.display = 'none';
+                document.getElementById('result-code').style.display = 'block';
+                document.getElementById('code').innerText = data.code;
+                setStatus('code_ready', 'Enter this code in WhatsApp -> Linked Devices.');
+            });
+
+            eventSource.addEventListener('qr', (ev) => {
+                const data = JSON.parse(ev.data || '{}');
+                if (!data.qr) return;
+                document.getElementById('method-qr').style.display = 'none';
+                document.getElementById('result-qr').style.display = 'block';
+                document.getElementById('qr-container').innerHTML = `<img src="${data.qr}" alt="WhatsApp QR Code">`;
+                setStatus('qr_ready', 'Scan this QR from WhatsApp -> Linked Devices.');
+            });
+
+            eventSource.addEventListener('exported', () => {
+                setStatus('done', 'Session was sent to your WhatsApp chat.');
+            });
+
+            eventSource.addEventListener('error', (ev) => {
+                try {
+                    const data = JSON.parse(ev.data || '{}');
+                    alert(data.message || 'Session error.');
+                } catch (e) {
+                    alert('Session error.');
+                } finally {
+                    teardownEvents();
+                    setStatus('Idle', '');
+                    setCodeLoading(false);
+                    setQrLoading(false);
+                }
+            });
         }
 
         async function getPairingCode() {
@@ -633,22 +783,27 @@
             }
 
             setCodeLoading(true);
+            setStatus('starting', 'Preparing secure session...');
 
             try {
-                const res = await fetchWithTimeout(`/pair?phone=${phone}&method=code`);
+                await ensureAuthCookie();
+
+                const res = await fetchWithTimeout('/pair', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ method: 'code', phone })
+                });
                 const data = await safeJson(res);
 
-                if (res.ok && data.code) {
-                    document.getElementById('method-code').style.display = 'none';
-                    document.getElementById('result-code').style.display = 'block';
-                    document.getElementById('code').innerText = data.code;
+                if (res.ok && data.id) {
+                    listenToSession(data.id);
                     return;
                 }
 
                 alert(data.error || 'Connection failed while generating pairing code.');
             } catch (e) {
                 console.error(e);
-                alert('Connection timeout. Please try again.');
+                alert(e && e.message ? e.message : 'Connection timeout. Please try again.');
             } finally {
                 setCodeLoading(false);
             }
@@ -656,22 +811,27 @@
 
         async function getQRCode() {
             setQrLoading(true);
+            setStatus('starting', 'Preparing secure session...');
 
             try {
-                const res = await fetchWithTimeout('/pair?method=qr');
+                await ensureAuthCookie();
+
+                const res = await fetchWithTimeout('/pair', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ method: 'qr' })
+                });
                 const data = await safeJson(res);
 
-                if (res.ok && data.qr) {
-                    document.getElementById('method-qr').style.display = 'none';
-                    document.getElementById('result-qr').style.display = 'block';
-                    document.getElementById('qr-container').innerHTML = `<img src="${data.qr}" alt="WhatsApp QR Code">`;
+                if (res.ok && data.id) {
+                    listenToSession(data.id);
                     return;
                 }
 
                 alert(data.error || 'QR generation failed.');
             } catch (e) {
                 console.error(e);
-                alert('Connection timeout. Please try again.');
+                alert(e && e.message ? e.message : 'Connection timeout. Please try again.');
             } finally {
                 setQrLoading(false);
             }
