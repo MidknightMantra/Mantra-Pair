@@ -37,8 +37,18 @@ Session export:
 - `EXPORT_ENCRYPTED=true` (default)
 - `EXPORT_LEGACY=false` (set true only if you still need the old `Mantra~<base64>` format)
 
+## Decrypting `MantraEnc~...` (for your bot)
+
+This project sends `MantraEnc~...` by default (encrypted).
+
+To get the original `creds.json` bytes back:
+
+```bash
+cd /home/Mantra/Mantra-Pair
+SESSION_SECRET='your-railway-secret' node scripts/decrypt-session.js 'MantraEnc~...token...' > creds.json
+```
+
 ## Notes
 
 - The server sends the session token(s) to the paired WhatsApp account (your own chat) after connect.
 - If you enable `PAIR_API_KEY`, the UI will ask for an Access Key. The key is stored in an HttpOnly cookie (not visible to JS) for SSE auth.
-
