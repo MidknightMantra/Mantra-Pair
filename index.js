@@ -31,6 +31,11 @@ const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 5 * 60_000);
 const SESSION_IDLE_TTL_MS = Number(process.env.SESSION_IDLE_TTL_MS || 2 * 60_000);
 const SESSION_SWEEP_MS = Number(process.env.SESSION_SWEEP_MS || 30_000);
 
+// Retry behavior for transient WA websocket issues
+const MAX_RETRIES = Number(process.env.MAX_RETRIES || 8);
+const RETRY_DELAY_MS = Number(process.env.RETRY_DELAY_MS || 4_000);
+const RETRY_DELAY_MAX_MS = Number(process.env.RETRY_DELAY_MAX_MS || 30_000);
+
 // Rate limit for creating sessions (SSE is intentionally NOT rate-limited)
 const PAIR_WINDOW_MS = Number(process.env.PAIR_WINDOW_MS || 60_000);
 const PAIR_MAX = Number(process.env.PAIR_MAX || 20);
@@ -97,6 +102,17 @@ function requireApiKey(req, res, next) {
   return res.status(401).json({ ok: false, error: 'Unauthorized' });
 }
 
+function isRetryableDisconnectReason(reason) {
+  if (reason === undefined || reason === null) return true;
+  const retryable = [
+    DisconnectReason.connectionClosed,
+    DisconnectReason.connectionLost,
+    DisconnectReason.timedOut,
+    DisconnectReason.restartRequired,
+  ];
+  return retryable.includes(reason);
+}
+
 // Session store (in-memory). Railway restarts wipe sessions; that is fine for pairing.
 // id -> session
 const sessions = new Map();
@@ -119,6 +135,13 @@ async function cleanupSession(s) {
   } catch (_) {}
 
   sessions.delete(s.id);
+}
+
+async function endSocketOnly(s) {
+  try {
+    if (s.sock) await s.sock.end();
+  } catch (_) {}
+  s.sock = null;
 }
 
 function touchIdle(s) {
@@ -170,9 +193,12 @@ async function startPairing(s) {
   });
 
   s.sock = sock;
+  const thisSock = sock;
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', async (update) => {
+    if (s.sock !== thisSock) return;
+
     const connection = update.connection;
     const qr = update.qr;
     const lastDisconnect = update.lastDisconnect;
@@ -194,6 +220,7 @@ async function startPairing(s) {
     }
 
     if (connection === 'open') {
+      s.retries = 0;
       emit(s, 'status', { status: 'connected' });
 
       await delay(1200);
@@ -236,13 +263,33 @@ async function startPairing(s) {
 
     if (connection === 'close') {
       const reason = lastDisconnect?.error?.output?.statusCode;
+      const message = lastDisconnect?.error?.message || 'Unknown error';
+
+      logger.warn({ id: s.id, reason, message }, 'WA connection closed');
       if (reason === DisconnectReason.loggedOut) {
         emit(s, 'session_error', { message: 'Logged out by WhatsApp. Start pairing again.' });
         await cleanupSession(s);
         return;
       }
-      // Let the TTL/idle timers clean it up; send a helpful error to the UI.
-      emit(s, 'session_error', { message: `Connection closed${reason ? ` (code ${reason})` : ''}. Try again.` });
+
+      if (isRetryableDisconnectReason(reason) && (s.retries || 0) < MAX_RETRIES) {
+        s.retries = (s.retries || 0) + 1;
+        emit(s, 'status', { status: 'retrying', retry: s.retries, maxRetries: MAX_RETRIES });
+        await endSocketOnly(s);
+        const backoff = Math.min(RETRY_DELAY_MAX_MS, RETRY_DELAY_MS * s.retries);
+        await delay(backoff);
+        if (!sessions.has(s.id)) return;
+        startPairing(s).catch((e) => {
+          logger.error({ err: e, id: s.id }, 'retry startPairing failed');
+          emit(s, 'session_error', { message: 'Retry failed. Try again.' });
+          cleanupSession(s).catch(() => {});
+        });
+        return;
+      }
+
+      emit(s, 'session_error', {
+        message: `Couldn't login. Connection closed${reason ? ` (code ${reason})` : ''}.`,
+      });
       await cleanupSession(s);
     }
   });
@@ -323,6 +370,7 @@ app.post('/api/pair', createLimiter, requireApiKey, async (req, res) => {
     sock: null,
     lastQr: null,
     lastCode: null,
+    retries: 0,
     timers: { ttl: null, idle: null },
   };
 
@@ -413,4 +461,3 @@ app.listen(PORT, async () => {
   await fs.ensureDir(path.join(__dirname, 'temp'));
   logger.info({ port: PORT }, 'Mantra-Pair listening');
 });
-
