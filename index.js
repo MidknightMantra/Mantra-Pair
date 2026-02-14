@@ -109,6 +109,7 @@ function isRetryableDisconnectReason(reason) {
     DisconnectReason.connectionLost,
     DisconnectReason.timedOut,
     DisconnectReason.restartRequired,
+    DisconnectReason.unavailableService,
   ];
   return retryable.includes(reason);
 }
@@ -308,9 +309,15 @@ async function startPairing(s) {
         return;
       }
 
-      emit(s, 'session_error', {
-        message: `Couldn't login. Connection closed${reason ? ` (code ${reason})` : ''}.`,
-      });
+      let msg = `Couldn't login. Connection closed${reason ? ` (code ${reason})` : ''}.`;
+      if (reason === DisconnectReason.unavailableService) {
+        msg =
+          s.method === 'code'
+            ? "WhatsApp service is temporarily unavailable for phone-number pairing (503). Try QR, or wait 5-10 minutes and retry."
+            : 'WhatsApp service is temporarily unavailable (503). Wait a bit and try again.';
+      }
+
+      emit(s, 'session_error', { message: msg });
       await cleanupSession(s);
     }
   });
