@@ -175,6 +175,48 @@ body::after { right: -100px; bottom: -120px; background: rgba(92, 169, 255, 0.32
 }
 .status .hint { margin-top: 0.35rem; color: #4d5771; }
 
+.error {
+  display: none;
+  border-radius: 14px;
+  border: 1px solid rgba(225, 29, 72, 0.18);
+  background: rgba(255, 255, 255, 0.78);
+  padding: 0.85rem 0.95rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow-soft);
+}
+.error.is-on { display: block; }
+.errorRow { display: grid; gap: 0.35rem; }
+.errorTitle {
+  font-family: 'Space Mono', monospace;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.78rem;
+  color: #7a1026;
+}
+.errorText { color: #2a1b20; font-size: 0.92rem; line-height: 1.55; }
+.errorActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+  margin-top: 0.8rem;
+}
+.ghost {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px dashed rgba(17, 26, 48, 0.18);
+  background: transparent;
+  color: #2a3550;
+  padding: 0.9rem 1rem;
+  font-family: 'Sora', sans-serif;
+  font-size: 0.86rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.ghost:hover { background: rgba(17, 26, 48, 0.06); }
+
 .mode h2 { margin: 0 0 0.3rem 0; font-size: 1.45rem; color: #111a30; }
 .note { margin: 0 0 1rem 0; color: #4d5771; font-size: 0.92rem; line-height: 1.6; }
 
@@ -315,4 +357,3 @@ input:focus {
       radial-gradient(circle at 90% 80%, rgba(92, 169, 255, 0.14), transparent 55%);
   }
 }
-

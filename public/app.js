@@ -6,6 +6,7 @@
 
   let mode = 'code';
   let es = null;
+  let lastError = '';
 
   function $(id) {
     return document.getElementById(id);
@@ -17,6 +18,14 @@
     box.classList.toggle('is-on', on);
     $('statusText').textContent = text || 'Idle';
     $('statusHint').textContent = hint || '';
+  }
+
+  function setError(message, canSwitchToQr) {
+    lastError = message || '';
+    const box = $('error');
+    box.classList.toggle('is-on', Boolean(message));
+    $('errorText').textContent = message || '';
+    $('btnSwitchToQr').disabled = !canSwitchToQr;
   }
 
   function setLoading(which, on) {
@@ -107,18 +116,7 @@
       const looksLikeCodeUnavailable =
         /(\b503\b|unavailable|temporarily unavailable|phone-number pairing|forbidden|\b403\b)/i.test(message);
 
-      if (mode === 'code' && looksLikeCodeUnavailable) {
-        const ok = window.confirm(
-          `${message}\n\nSwitch to QR Scan instead?`
-        );
-        if (ok) {
-          setMode('qr');
-          setStatus('Idle', 'Switched to QR Scan. Tap "Generate QR Code".');
-          return;
-        }
-      }
-
-      alert(message);
+      setError(message, mode === 'code' && looksLikeCodeUnavailable);
     });
   }
 
@@ -148,6 +146,7 @@
 
   async function onCode() {
     hideResults();
+    setError('', false);
     setLoading('code', true);
     setStatus('starting', 'Creating session...');
     try {
@@ -164,6 +163,7 @@
 
   async function onQr() {
     hideResults();
+    setError('', false);
     setLoading('qr', true);
     setStatus('starting', 'Creating session...');
     try {
@@ -191,6 +191,7 @@
 
     teardown();
     hideResults();
+    setError('', false);
     setStatus('Idle', '');
   }
 
@@ -206,6 +207,11 @@
     $('btnQr').addEventListener('click', onQr);
     $('btnResetA').addEventListener('click', reset);
     $('btnResetB').addEventListener('click', reset);
+    $('btnSwitchToQr').addEventListener('click', () => {
+      setMode('qr');
+      setStatus('Idle', 'Switched to QR Scan. Tap "Generate QR Code".');
+    });
+    $('btnDismissError').addEventListener('click', () => setError('', false));
     setMode(mode);
   });
 })();

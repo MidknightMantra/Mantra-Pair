@@ -48,9 +48,20 @@
           <div class="hint" id="statusHint"></div>
         </div>
 
+        <div class="error" id="error" role="status" aria-live="polite">
+          <div class="errorRow">
+            <div class="errorTitle">Issue</div>
+            <div class="errorText" id="errorText"></div>
+          </div>
+          <div class="errorActions">
+            <button class="secondary" id="btnSwitchToQr" type="button">Switch to QR</button>
+            <button class="ghost" id="btnDismissError" type="button">Dismiss</button>
+          </div>
+        </div>
+
         <div id="mode-code" class="mode">
           <h2>Pair by phone number</h2>
-          <p class="note">Enter full number with country code. Digits only.</p>
+          <p class="note">Enter full number with country code. Digits only. If it fails on Railway, QR is usually more reliable.</p>
 
           <label class="field">
             <span>Phone</span>
@@ -100,4 +111,3 @@
     </main>
   </body>
 </html>
-
