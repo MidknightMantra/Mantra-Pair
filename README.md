@@ -1,12 +1,6 @@
-# Mantra-Pair (Railway)
+# Mantra-Pair
 
-Pairing web UI + API for generating a WhatsApp session via Baileys and delivering it to your own WhatsApp chat.
-
-- `RATE_LIMIT_MAX=30`
-- `SESSION_TTL_MS=300000`
-- `SESSION_IDLE_TTL_MS=120000`
-- `MAX_RETRIES=3`
-- `RETRY_DELAY_MS=5000`
+Pairing web UI for generating a WhatsApp session via Baileys and delivering it to your own WhatsApp chat.
 
 Session export:
 
