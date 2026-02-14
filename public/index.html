@@ -557,11 +557,6 @@
                 <button class="tab" id="tab-qr" type="button" onclick="switchTab('qr')">QR Scan</button>
             </div>
 
-            <div class="input-group">
-                <label class="label" for="apiKey">Access Key (If Enabled)</label>
-                <input type="password" id="apiKey" placeholder="Set PAIR_API_KEY on Railway to enable" autocomplete="off">
-            </div>
-
             <div class="status-banner" id="statusBanner">
                 <div><strong>Status</strong>: <span id="statusText">Idle</span></div>
                 <div id="statusHint" style="margin-top:0.35rem;color:#4d5771;"></div>
@@ -705,19 +700,6 @@
             currentSessionId = null;
         }
 
-        async function ensureAuthCookie() {
-            const apiKey = document.getElementById('apiKey').value;
-            const res = await fetchWithTimeout('/auth', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ apiKey })
-            });
-
-            if (res.status === 204) return;
-            const data = await safeJson(res);
-            throw new Error(data.error || 'Access key required or invalid.');
-        }
-
         function listenToSession(id) {
             teardownEvents();
             currentSessionId = id;
@@ -786,8 +768,6 @@
             setStatus('starting', 'Preparing secure session...');
 
             try {
-                await ensureAuthCookie();
-
                 const res = await fetchWithTimeout('/pair', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -814,8 +794,6 @@
             setStatus('starting', 'Preparing secure session...');
 
             try {
-                await ensureAuthCookie();
-
                 const res = await fetchWithTimeout('/pair', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },

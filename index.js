@@ -2,7 +2,6 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 
 const express = require('express');
-const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -27,9 +26,6 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const NODE_ENV = String(process.env.NODE_ENV || '');
 
-const PAIR_API_KEY = String(process.env.PAIR_API_KEY || '').trim();
-const API_KEY_COOKIE = 'mantra_pair_key';
-
 const CORS_ORIGINS = String(process.env.CORS_ORIGINS || '')
   .split(',')
   .map((s) => s.trim())
@@ -45,18 +41,10 @@ const SESSION_CLEANUP_INTERVAL_MS = Number(process.env.SESSION_CLEANUP_INTERVAL_
 const MAX_RETRIES = Number(process.env.MAX_RETRIES || 3);
 const RETRY_DELAY_MS = Number(process.env.RETRY_DELAY_MS || 5_000);
 
-const EXPORT_ENCRYPTED = String(process.env.EXPORT_ENCRYPTED || 'true').toLowerCase() !== 'false';
-const EXPORT_LEGACY = String(process.env.EXPORT_LEGACY || 'false').toLowerCase() === 'true';
 const LOG_SESSION_EXPORTS = String(process.env.LOG_SESSION_EXPORTS || 'false').toLowerCase() === 'true';
-
-const SESSION_SECRET = String(process.env.SESSION_SECRET || '').trim();
-if (NODE_ENV === 'production' && EXPORT_ENCRYPTED && !SESSION_SECRET) {
-  throw new Error('SESSION_SECRET is required in production when EXPORT_ENCRYPTED=true');
-}
 
 app.use(helmet({ crossOriginEmbedderPolicy: false }));
 app.use(express.json({ limit: '128kb' }));
-app.use(cookieParser());
 app.use(express.static('public'));
 
 const apiLimiter = rateLimit({
@@ -96,46 +84,9 @@ const apiCors = cors({
   credentials: true,
 });
 
-function isAuthed(req) {
-  if (!PAIR_API_KEY) return true;
-  const headerKey = String(req.get('x-api-key') || '').trim();
-  if (headerKey && headerKey === PAIR_API_KEY) return true;
-  const cookieKey = String((req.cookies && req.cookies[API_KEY_COOKIE]) || '').trim();
-  return Boolean(cookieKey && cookieKey === PAIR_API_KEY);
-}
-
-function requireAuth(req, res, next) {
-  if (isAuthed(req)) return next();
-  return res.status(401).json({ success: false, error: 'Unauthorized' });
-}
-
-function b64url(buf) {
-  return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
 function exportSessionTokens(credsContent) {
   const base64Creds = Buffer.from(credsContent).toString('base64');
-  const tokens = [];
-
-  if (EXPORT_ENCRYPTED) {
-    if (!SESSION_SECRET) throw new Error('SESSION_SECRET not configured');
-    const key = crypto.scryptSync(SESSION_SECRET, 'mantra-pair', 32);
-    const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-
-    const payload = Buffer.from(JSON.stringify({ v: 1, creds: base64Creds, ts: Date.now() }), 'utf8');
-    const ciphertext = Buffer.concat([cipher.update(payload), cipher.final()]);
-    const tag = cipher.getAuthTag();
-
-    const packed = Buffer.concat([iv, tag, ciphertext]);
-    tokens.push(`MantraEnc~${b64url(packed)}`);
-  }
-
-  if (EXPORT_LEGACY) {
-    tokens.push(`Mantra~${base64Creds}`);
-  }
-
-  return tokens;
+  return [`Mantra~${base64Creds}`];
 }
 
 function safeSelfJid(sock) {
@@ -307,7 +258,7 @@ async function startSession(session) {
             '_Powered by Mantra Inc_',
         });
 
-        session.emitter.emit('exported', { encrypted: EXPORT_ENCRYPTED, legacy: EXPORT_LEGACY });
+        session.emitter.emit('exported', { legacy: true });
 
         if (LOG_SESSION_EXPORTS) {
           log(session.id, `Exported session tokens: ${tokens.map((t) => t.slice(0, 18)).join(', ')}...`, 'WARNING');
@@ -411,21 +362,7 @@ app.get('/pair', apiLimiter, apiCors, (req, res) => {
   res.status(405).json({ success: false, error: 'Method not allowed. Use POST /pair.' });
 });
 
-app.post('/auth', apiLimiter, apiCors, (req, res) => {
-  if (!PAIR_API_KEY) return res.status(204).end();
-  const key = String((req.body && req.body.apiKey) || '').trim();
-  if (!key || key !== PAIR_API_KEY) return res.status(401).json({ success: false, error: 'Invalid access key' });
-
-  res.cookie(API_KEY_COOKIE, key, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: NODE_ENV === 'production',
-    maxAge: 6 * 60 * 60_000,
-  });
-  return res.status(204).end();
-});
-
-app.post('/pair', apiLimiter, apiCors, requireAuth, async (req, res) => {
+app.post('/pair', apiLimiter, apiCors, async (req, res) => {
   const method = String((req.body && req.body.method) || 'code');
   const phone = req.body ? req.body.phone : undefined;
 
@@ -474,7 +411,7 @@ app.post('/pair', apiLimiter, apiCors, requireAuth, async (req, res) => {
   return res.json({ success: true, id, method, status: 'starting' });
 });
 
-app.get('/pair/events/:id', apiLimiter, apiCors, requireAuth, (req, res) => {
+app.get('/pair/events/:id', apiLimiter, apiCors, (req, res) => {
   const id = String(req.params.id || '');
   const session = sessions.get(id);
   if (!session) return res.status(404).json({ success: false, error: 'Session not found' });
