@@ -1,14 +1,12 @@
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
+const path = require('path');
 
 const express = require('express');
-const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const QRCode = require('qrcode');
-
 const fs = require('fs-extra');
-const path = require('path');
 const pino = require('pino');
 
 const {
@@ -21,153 +19,126 @@ const {
   fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys');
 
-const app = express();
-
 const PORT = Number(process.env.PORT || 3000);
-const NODE_ENV = String(process.env.NODE_ENV || '');
+const LOG_LEVEL = String(process.env.LOG_LEVEL || 'info');
 
-const CORS_ORIGINS = String(process.env.CORS_ORIGINS || '')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
+// Optional protection: if PAIR_API_KEY is set, /api/pair requires x-api-key,
+// and SSE requires the per-session streamKey returned by /api/pair.
+const PAIR_API_KEY = String(process.env.PAIR_API_KEY || '').trim();
 
-const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
-const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 30);
-
+// Session lifecycle
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 5 * 60_000);
 const SESSION_IDLE_TTL_MS = Number(process.env.SESSION_IDLE_TTL_MS || 2 * 60_000);
-const SESSION_CLEANUP_INTERVAL_MS = Number(process.env.SESSION_CLEANUP_INTERVAL_MS || 30_000);
+const SESSION_SWEEP_MS = Number(process.env.SESSION_SWEEP_MS || 30_000);
 
-const MAX_RETRIES = Number(process.env.MAX_RETRIES || 3);
-const RETRY_DELAY_MS = Number(process.env.RETRY_DELAY_MS || 5_000);
+// Rate limit for creating sessions (SSE is intentionally NOT rate-limited)
+const PAIR_WINDOW_MS = Number(process.env.PAIR_WINDOW_MS || 60_000);
+const PAIR_MAX = Number(process.env.PAIR_MAX || 20);
 
-const LOG_SESSION_EXPORTS = String(process.env.LOG_SESSION_EXPORTS || 'false').toLowerCase() === 'true';
+// Export format: legacy by default.
+// If EXPORT_ENCRYPTED=true, SESSION_SECRET is required and we send MantraEnc~...
+const EXPORT_ENCRYPTED = String(process.env.EXPORT_ENCRYPTED || 'false').toLowerCase() === 'true';
+const SESSION_SECRET = String(process.env.SESSION_SECRET || '').trim();
+if (EXPORT_ENCRYPTED && !SESSION_SECRET) {
+  throw new Error('SESSION_SECRET is required when EXPORT_ENCRYPTED=true');
+}
 
-app.use(helmet({ crossOriginEmbedderPolicy: false }));
-app.use(express.json({ limit: '128kb' }));
-app.use(express.static('public'));
+const logger = pino({ level: LOG_LEVEL });
 
-const apiLimiter = rateLimit({
-  windowMs: RATE_LIMIT_WINDOW_MS,
-  max: RATE_LIMIT_MAX,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { success: false, error: 'Rate limit exceeded. Try again shortly.' },
-});
+function now() {
+  return Date.now();
+}
 
-function log(id, msg, level = 'INFO') {
-  const levels = {
-    INFO: '\x1b[36m[INFO]\x1b[0m',
-    SUCCESS: '\x1b[32m[SUCCESS]\x1b[0m',
-    WARNING: '\x1b[33m[WARNING]\x1b[0m',
-    ERROR: '\x1b[31m[ERROR]\x1b[0m',
-  };
-  console.log(`[${new Date().toLocaleTimeString()}] ${levels[level] || levels.INFO} [${id}] ${msg}`);
+function randomId(prefix) {
+  return `${prefix}_${now()}_${crypto.randomBytes(8).toString('hex')}`;
 }
 
 function validatePhone(phone) {
   const cleaned = String(phone || '').replace(/\D/g, '');
   if (cleaned.length < 10 || cleaned.length > 15) {
-    return { valid: false, error: 'Phone number must be 10-15 digits' };
+    return { ok: false, error: 'Phone number must be 10-15 digits' };
   }
-  return { valid: true, cleaned };
-}
-
-function corsOriginFn(origin, cb) {
-  if (!origin) return cb(null, true);
-  if (CORS_ORIGINS.length === 0) return cb(null, false);
-  return cb(null, CORS_ORIGINS.includes(origin));
-}
-
-const apiCors = cors({
-  origin: corsOriginFn,
-  credentials: true,
-});
-
-function exportSessionTokens(credsContent) {
-  const base64Creds = Buffer.from(credsContent).toString('base64');
-  return [`Mantra~${base64Creds}`];
+  return { ok: true, phone: cleaned };
 }
 
 function safeSelfJid(sock) {
-  const id = String(sock && sock.user && sock.user.id ? sock.user.id : '');
+  const id = String(sock?.user?.id || '');
   const left = id.split('@')[0] || '';
   const number = (left.split(':')[0] || '').trim();
-  if (!number) return null;
-  return `${number}@s.whatsapp.net`;
+  return number ? `${number}@s.whatsapp.net` : null;
 }
 
-function shouldRetry(retries, reason) {
-  if (retries >= MAX_RETRIES) return false;
-  if (reason === undefined || reason === null) return true;
-  const retryable = [
-    DisconnectReason.connectionClosed,
-    DisconnectReason.connectionLost,
-    DisconnectReason.timedOut,
-    DisconnectReason.restartRequired,
-  ];
-  return retryable.includes(reason);
+function b64url(buf) {
+  return Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
-function makeSessionId() {
-  return `session_${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
+function exportTokensFromCreds(credsBytes) {
+  const base64Creds = Buffer.from(credsBytes).toString('base64');
+
+  if (!EXPORT_ENCRYPTED) {
+    return [`Mantra~${base64Creds}`];
+  }
+
+  const key = crypto.scryptSync(SESSION_SECRET, 'mantra-pair', 32);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+
+  const payload = Buffer.from(JSON.stringify({ v: 1, creds: base64Creds, ts: now() }), 'utf8');
+  const ciphertext = Buffer.concat([cipher.update(payload), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  return [`MantraEnc~${b64url(Buffer.concat([iv, tag, ciphertext]))}`];
 }
 
-function sessionDirFor(id) {
+function requireApiKey(req, res, next) {
+  if (!PAIR_API_KEY) return next();
+  const key = String(req.get('x-api-key') || '').trim();
+  if (key && key === PAIR_API_KEY) return next();
+  return res.status(401).json({ ok: false, error: 'Unauthorized' });
+}
+
+// Session store (in-memory). Railway restarts wipe sessions; that is fine for pairing.
+// id -> session
+const sessions = new Map();
+
+function sessionDir(id) {
   return path.join(__dirname, 'temp', id);
 }
 
-const sessions = new Map();
+async function cleanupSession(s) {
+  if (!s) return;
+  if (s.timers.ttl) clearTimeout(s.timers.ttl);
+  if (s.timers.idle) clearTimeout(s.timers.idle);
 
-async function cleanupSession(session, removeFiles = true) {
-  if (!session) return;
+  try {
+    if (s.sock) await s.sock.end();
+  } catch (_) {}
 
-  if (session.ttlTimer) clearTimeout(session.ttlTimer);
-  if (session.idleTimer) clearTimeout(session.idleTimer);
+  try {
+    await fs.remove(s.dir);
+  } catch (_) {}
 
-  if (session.sock) {
-    try {
-      await session.sock.end();
-    } catch (_) {
-      // ignore
-    }
-    session.sock = null;
-  }
-
-  if (removeFiles) {
-    try {
-      await fs.remove(session.sessionDir);
-    } catch (_) {
-      // ignore
-    }
-  }
-
-  sessions.delete(session.id);
-  log(session.id, 'Session cleaned', 'INFO');
+  sessions.delete(s.id);
 }
 
-function setIdleTimer(session) {
-  if (session.idleTimer) clearTimeout(session.idleTimer);
-  session.idleTimer = setTimeout(() => {
-    session.emitter.emit('session_error', { message: 'Session expired due to inactivity.' });
-    cleanupSession(session).catch(() => {});
+function touchIdle(s) {
+  if (s.timers.idle) clearTimeout(s.timers.idle);
+  s.timers.idle = setTimeout(() => {
+    s.emitter.emit('session_error', { message: 'Session expired due to inactivity.' });
+    cleanupSession(s).catch(() => {});
   }, SESSION_IDLE_TTL_MS);
 }
 
-function emitStatus(session, status, extra) {
-  session.status = status;
-  session.lastEventAt = Date.now();
-  session.emitter.emit('status', { status, ...(extra || {}) });
+function emit(s, event, data) {
+  s.lastEventAt = now();
+  s.emitter.emit(event, data);
 }
 
-async function startSession(session) {
-  await fs.ensureDir(session.sessionDir);
-  emitStatus(session, 'starting');
-  setIdleTimer(session);
+async function startPairing(s) {
+  await fs.ensureDir(s.dir);
+  touchIdle(s);
 
-  const { state, saveCreds } = await useMultiFileAuthState(session.sessionDir);
-  const browser = Browsers.macOS('Chrome');
-
+  const { state, saveCreds } = await useMultiFileAuthState(s.dir);
   let version;
   try {
     if (typeof fetchLatestBaileysVersion === 'function') {
@@ -175,7 +146,7 @@ async function startSession(session) {
       version = latest.version;
     }
   } catch (e) {
-    log(session.id, `Unable to fetch latest WA version tuple: ${e.message}`, 'WARNING');
+    logger.warn({ err: e }, 'fetchLatestBaileysVersion failed; using default version');
   }
 
   const sock = makeWASocket({
@@ -184,71 +155,67 @@ async function startSession(session) {
       keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'fatal' })),
     },
     version,
-    printQRInTerminal: false,
     logger: pino({ level: 'silent' }),
-    browser,
+    browser: Browsers.macOS('Chrome'),
+    printQRInTerminal: false,
     connectTimeoutMs: 90_000,
     defaultQueryTimeoutMs: 0,
     keepAliveIntervalMs: 10_000,
-    emitOwnEvents: true,
     retryRequestDelayMs: 2_000,
     qrTimeout: 90_000,
-    usePairingCode: session.method === 'code',
+    usePairingCode: s.method === 'code',
     syncFullHistory: false,
     markOnlineOnConnect: false,
     getMessage: async () => undefined,
   });
 
-  session.sock = sock;
+  s.sock = sock;
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', async (update) => {
     const connection = update.connection;
-    const lastDisconnect = update.lastDisconnect;
     const qr = update.qr;
+    const lastDisconnect = update.lastDisconnect;
 
     if (connection) {
-      emitStatus(session, connection);
-      log(session.id, `Connection status: ${connection}`, 'INFO');
+      emit(s, 'status', { status: connection });
+      touchIdle(s);
     }
 
-    if (qr && session.method === 'qr') {
+    if (qr && s.method === 'qr') {
       try {
-        const qrImage = await QRCode.toDataURL(qr);
-        session.lastQr = qrImage;
-        session.lastEventAt = Date.now();
-        session.emitter.emit('qr', { qr: qrImage });
-        setIdleTimer(session);
+        const qrDataUrl = await QRCode.toDataURL(qr);
+        s.lastQr = qrDataUrl;
+        emit(s, 'qr', { qr: qrDataUrl });
+        touchIdle(s);
       } catch (e) {
-        session.emitter.emit('session_error', { message: `Failed to generate QR: ${e.message}` });
+        emit(s, 'session_error', { message: `Failed to render QR: ${e.message}` });
       }
     }
 
     if (connection === 'open') {
-      session.retries = 0;
-      log(session.id, 'Successfully connected', 'SUCCESS');
-      session.emitter.emit('connected', { ok: true });
+      emit(s, 'status', { status: 'connected' });
 
       await delay(1200);
-      const credsPath = path.join(session.sessionDir, 'creds.json');
+      const credsPath = path.join(s.dir, 'creds.json');
       if (!fs.existsSync(credsPath)) {
-        session.emitter.emit('session_error', { message: 'creds.json not found after connect' });
-        await cleanupSession(session);
+        emit(s, 'session_error', { message: 'creds.json not found after connect' });
+        await cleanupSession(s);
         return;
       }
 
       try {
-        const credsContent = await fs.readFile(credsPath);
-        const tokens = exportSessionTokens(credsContent);
-        const userJid = safeSelfJid(sock);
-        if (!userJid) throw new Error('Could not resolve self JID');
+        const credsBytes = await fs.readFile(credsPath);
+        const tokens = exportTokensFromCreds(credsBytes);
+        const selfJid = safeSelfJid(sock);
+        if (!selfJid) throw new Error('Could not resolve self JID');
 
         for (const t of tokens) {
-          await sock.sendMessage(userJid, { text: t });
-          await delay(400);
+          await sock.sendMessage(selfJid, { text: t });
+          await delay(300);
         }
 
-        await sock.sendMessage(userJid, {
+        await sock.sendMessage(selfJid, {
           text:
             '╭━━━━━━━━━━━━━━━╮\n' +
             '│ *MANTRA CONNECTED* ✅\n' +
@@ -258,163 +225,137 @@ async function startSession(session) {
             '_Powered by Mantra Inc_',
         });
 
-        session.emitter.emit('exported', { legacy: true });
-
-        if (LOG_SESSION_EXPORTS) {
-          log(session.id, `Exported session tokens: ${tokens.map((t) => t.slice(0, 18)).join(', ')}...`, 'WARNING');
-        }
+        emit(s, 'exported', { format: EXPORT_ENCRYPTED ? 'encrypted' : 'legacy' });
       } catch (e) {
-        session.emitter.emit('session_error', { message: `Failed to export session: ${e.message}` });
+        emit(s, 'session_error', { message: `Failed to export session: ${e.message}` });
       } finally {
         await delay(2500);
-        await cleanupSession(session);
+        await cleanupSession(s);
       }
     }
 
     if (connection === 'close') {
-      const reason = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output
-        ? lastDisconnect.error.output.statusCode
-        : undefined;
-      const errorMsg = lastDisconnect && lastDisconnect.error && lastDisconnect.error.message
-        ? lastDisconnect.error.message
-        : 'Unknown error';
-
-      log(session.id, `Connection closed: ${errorMsg}${reason ? ` (code ${reason})` : ''}`, 'WARNING');
-
+      const reason = lastDisconnect?.error?.output?.statusCode;
       if (reason === DisconnectReason.loggedOut) {
-        session.emitter.emit('session_error', { message: 'Logged out by WhatsApp. Start pairing again.' });
-        await cleanupSession(session);
+        emit(s, 'session_error', { message: 'Logged out by WhatsApp. Start pairing again.' });
+        await cleanupSession(s);
         return;
       }
-
-      if (shouldRetry(session.retries || 0, reason)) {
-        session.retries = (session.retries || 0) + 1;
-        session.emitter.emit('status', { status: 'retrying', retry: session.retries, maxRetries: MAX_RETRIES });
-        await delay(RETRY_DELAY_MS);
-        startSession(session).catch((e) => {
-          session.emitter.emit('session_error', { message: `Retry failed: ${e.message}` });
-          cleanupSession(session).catch(() => {});
-        });
-      } else {
-        session.emitter.emit('session_error', {
-          message: `Connection failed after ${MAX_RETRIES} retries${reason ? ` (code ${reason})` : ''}`,
-        });
-        await cleanupSession(session);
-      }
+      // Let the TTL/idle timers clean it up; send a helpful error to the UI.
+      emit(s, 'session_error', { message: `Connection closed${reason ? ` (code ${reason})` : ''}. Try again.` });
+      await cleanupSession(s);
     }
   });
 
-  if (session.method === 'code') {
-    emitStatus(session, 'requesting_code');
+  if (s.method === 'code') {
+    emit(s, 'status', { status: 'requesting_code' });
     await delay(4500);
-    if (session.sock !== sock) return;
+    if (s.sock !== sock) return;
     try {
-      const code = await sock.requestPairingCode(session.phone);
-      const formatted = code && code.match(/.{1,4}/g) ? code.match(/.{1,4}/g).join('-') : code;
-      session.lastCode = formatted;
-      session.lastEventAt = Date.now();
-      session.emitter.emit('code', { code: formatted, expiresIn: 60 });
-      setIdleTimer(session);
+      const raw = await sock.requestPairingCode(s.phone);
+      const formatted = raw?.match(/.{1,4}/g)?.join('-') || raw;
+      s.lastCode = formatted;
+      emit(s, 'code', { code: formatted, expiresIn: 60 });
+      touchIdle(s);
     } catch (e) {
-      session.emitter.emit('session_error', { message: `Failed to generate pairing code: ${e.message}` });
+      emit(s, 'session_error', { message: `Failed to generate pairing code: ${e.message}` });
     }
   } else {
-    emitStatus(session, 'waiting_qr');
-    setIdleTimer(session);
+    emit(s, 'status', { status: 'waiting_qr' });
   }
 }
 
-process.on('SIGINT', async () => {
-  log('SERVER', 'Shutting down gracefully...', 'WARNING');
+function sweepExpired() {
+  const t = now();
   for (const s of sessions.values()) {
-    await cleanupSession(s).catch(() => {});
-  }
-  process.exit(0);
-});
-
-async function cleanupOldTempOnStartup() {
-  const tempDir = path.join(__dirname, 'temp');
-  await fs.ensureDir(tempDir);
-  const files = await fs.readdir(tempDir);
-  for (const file of files) {
-    const filePath = path.join(tempDir, file);
-    try {
-      const stats = await fs.stat(filePath);
-      const age = Date.now() - stats.mtimeMs;
-      if (age > 60 * 60_000) await fs.remove(filePath);
-    } catch (_) {
-      // ignore
-    }
-  }
-}
-
-setInterval(() => {
-  const now = Date.now();
-  for (const s of sessions.values()) {
-    if (now - (s.createdAt || now) > SESSION_TTL_MS) {
+    if (t - s.createdAt > SESSION_TTL_MS) {
       s.emitter.emit('session_error', { message: 'Session expired.' });
       cleanupSession(s).catch(() => {});
     }
   }
-}, SESSION_CLEANUP_INTERVAL_MS).unref();
+}
 
-app.get('/pair', apiLimiter, apiCors, (req, res) => {
-  res.status(405).json({ success: false, error: 'Method not allowed. Use POST /pair.' });
+setInterval(sweepExpired, SESSION_SWEEP_MS).unref();
+
+const app = express();
+
+app.use(helmet({ crossOriginEmbedderPolicy: false }));
+app.use(express.json({ limit: '128kb' }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/health', (req, res) => {
+  res.json({ ok: true, uptime: process.uptime(), activeSessions: sessions.size });
 });
 
-app.post('/pair', apiLimiter, apiCors, async (req, res) => {
-  const method = String((req.body && req.body.method) || 'code');
-  const phone = req.body ? req.body.phone : undefined;
+const createLimiter = rateLimit({
+  windowMs: PAIR_WINDOW_MS,
+  max: PAIR_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { ok: false, error: 'Rate limit exceeded. Try again shortly.' },
+});
 
+app.post('/api/pair', createLimiter, requireApiKey, async (req, res) => {
+  const method = String(req.body?.method || 'code');
   if (!['code', 'qr'].includes(method)) {
-    return res.status(400).json({ success: false, error: 'Invalid method. Use "code" or "qr".' });
+    return res.status(400).json({ ok: false, error: 'Invalid method. Use "code" or "qr".' });
   }
 
-  let cleanedPhone = null;
+  let phone = null;
   if (method === 'code') {
-    const v = validatePhone(phone);
-    if (!v.valid) return res.status(400).json({ success: false, error: v.error });
-    cleanedPhone = v.cleaned;
+    const v = validatePhone(req.body?.phone);
+    if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+    phone = v.phone;
   }
 
-  const id = makeSessionId();
-  const session = {
+  const id = randomId('sess');
+  const streamKey = crypto.randomBytes(18).toString('hex');
+
+  const s = {
     id,
+    streamKey,
     method,
-    phone: cleanedPhone,
-    createdAt: Date.now(),
-    lastEventAt: Date.now(),
-    sessionDir: sessionDirFor(id),
+    phone,
+    createdAt: now(),
+    lastEventAt: now(),
+    dir: sessionDir(id),
     emitter: new EventEmitter(),
-    retries: 0,
-    status: 'created',
+    sock: null,
     lastQr: null,
     lastCode: null,
-    sock: null,
-    ttlTimer: null,
-    idleTimer: null,
+    timers: { ttl: null, idle: null },
   };
 
-  sessions.set(id, session);
-  session.ttlTimer = setTimeout(() => {
-    session.emitter.emit('session_error', { message: 'Session expired.' });
-    cleanupSession(session).catch(() => {});
+  sessions.set(id, s);
+  s.timers.ttl = setTimeout(() => {
+    s.emitter.emit('session_error', { message: 'Session expired.' });
+    cleanupSession(s).catch(() => {});
   }, SESSION_TTL_MS);
 
-  log(id, `New ${method.toUpperCase()} pairing request${cleanedPhone ? ` for ${cleanedPhone}` : ''}`, 'INFO');
-
-  startSession(session).catch((e) => {
-    session.emitter.emit('session_error', { message: `Failed to start session: ${e.message}` });
-    cleanupSession(session).catch(() => {});
+  startPairing(s).catch((e) => {
+    logger.error({ err: e, id }, 'startPairing failed');
+    s.emitter.emit('session_error', { message: 'Failed to start pairing session.' });
+    cleanupSession(s).catch(() => {});
   });
 
-  return res.json({ success: true, id, method, status: 'starting' });
+  res.json({
+    ok: true,
+    id,
+    method,
+    // Only needed when PAIR_API_KEY is enabled.
+    streamKey: PAIR_API_KEY ? streamKey : null,
+  });
 });
 
-app.get('/pair/events/:id', apiLimiter, apiCors, (req, res) => {
+app.get('/api/sessions/:id/events', (req, res) => {
   const id = String(req.params.id || '');
-  const session = sessions.get(id);
-  if (!session) return res.status(404).json({ success: false, error: 'Session not found' });
+  const s = sessions.get(id);
+  if (!s) return res.status(404).json({ ok: false, error: 'Session not found' });
+
+  if (PAIR_API_KEY) {
+    const key = String(req.query.key || '').trim();
+    if (!key || key !== s.streamKey) return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -427,23 +368,22 @@ app.get('/pair/events/:id', apiLimiter, apiCors, (req, res) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  send('status', { status: session.status || 'starting' });
-  if (session.lastCode) send('code', { code: session.lastCode, expiresIn: 60 });
-  if (session.lastQr) send('qr', { qr: session.lastQr });
+  // Initial snapshot
+  if (s.lastCode) send('code', { code: s.lastCode, expiresIn: 60 });
+  if (s.lastQr) send('qr', { qr: s.lastQr });
+  send('status', { status: 'listening' });
 
   const onStatus = (p) => send('status', p);
   const onCode = (p) => send('code', p);
   const onQr = (p) => send('qr', p);
-  const onConnected = (p) => send('connected', p);
   const onExported = (p) => send('exported', p);
-  const onError = (p) => send('error', p);
+  const onErr = (p) => send('error', p);
 
-  session.emitter.on('status', onStatus);
-  session.emitter.on('code', onCode);
-  session.emitter.on('qr', onQr);
-  session.emitter.on('connected', onConnected);
-  session.emitter.on('exported', onExported);
-  session.emitter.on('session_error', onError);
+  s.emitter.on('status', onStatus);
+  s.emitter.on('code', onCode);
+  s.emitter.on('qr', onQr);
+  s.emitter.on('exported', onExported);
+  s.emitter.on('session_error', onErr);
 
   const keepAlive = setInterval(() => {
     res.write('event: ping\n');
@@ -452,28 +392,25 @@ app.get('/pair/events/:id', apiLimiter, apiCors, (req, res) => {
 
   req.on('close', () => {
     clearInterval(keepAlive);
-    session.emitter.off('status', onStatus);
-    session.emitter.off('code', onCode);
-    session.emitter.off('qr', onQr);
-    session.emitter.off('connected', onConnected);
-    session.emitter.off('exported', onExported);
-    session.emitter.off('session_error', onError);
+    s.emitter.off('status', onStatus);
+    s.emitter.off('code', onCode);
+    s.emitter.off('qr', onQr);
+    s.emitter.off('exported', onExported);
+    s.emitter.off('session_error', onErr);
   });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', activeSessions: sessions.size, uptime: process.uptime() });
+process.on('SIGINT', async () => {
+  logger.warn('Shutting down...');
+  for (const s of sessions.values()) {
+    // eslint-disable-next-line no-await-in-loop
+    await cleanupSession(s).catch(() => {});
+  }
+  process.exit(0);
 });
 
 app.listen(PORT, async () => {
-  await cleanupOldTempOnStartup();
-
-  console.log('\n' + '='.repeat(56));
-  console.log('Mantra-Pair Server Started');
-  console.log('='.repeat(56));
-  console.log(`Port: ${PORT}`);
-  console.log(`Health: http://localhost:${PORT}/health`);
-  console.log('Pair: POST /pair');
-  console.log('Events: GET /pair/events/:id');
-  console.log('='.repeat(56) + '\n');
+  await fs.ensureDir(path.join(__dirname, 'temp'));
+  logger.info({ port: PORT }, 'Mantra-Pair listening');
 });
+

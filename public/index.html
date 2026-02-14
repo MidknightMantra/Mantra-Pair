@@ -1,820 +1,103 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mantra Pair Console</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="preload" as="image" href="/assets/ov9irq.jpg">
-    <link rel="preload" as="image" href="/assets/q0q02r.jpg">
-    <link rel="preload" as="image" href="/assets/hfz2c3.jpg">
-    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap"
-        rel="stylesheet">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        :root {
-            --ink-950: #0a0f1d;
-            --ink-900: #111a30;
-            --ink-800: #1c2742;
-            --slate-500: #6b7898;
-            --slate-300: #b7c1d9;
-            --paper: #f8f5ef;
-            --white: #ffffff;
-            --accent-orange: #ff7a1a;
-            --accent-amber: #ffb347;
-            --accent-blue: #5ca9ff;
-            --danger: #e11d48;
-            --page-bg-image: url('/assets/ov9irq.jpg');
-            --info-image: url('/assets/q0q02r.jpg');
-            --panel-image: url('/assets/hfz2c3.jpg');
-            --radius-lg: 24px;
-            --radius-md: 14px;
-            --shadow-strong: 0 28px 60px rgba(10, 15, 29, 0.28);
-            --shadow-soft: 0 12px 30px rgba(10, 15, 29, 0.14);
-        }
-
-        body {
-            min-height: 100vh;
-            font-family: 'Sora', sans-serif;
-            color: var(--ink-900);
-            background-color: var(--ink-950);
-            background:
-                linear-gradient(135deg, rgba(12, 17, 31, 0.54), rgba(12, 17, 31, 0.38)),
-                var(--page-bg-image) center center / cover no-repeat fixed;
-            display: grid;
-            place-items: center;
-            padding: 1.2rem;
-            overflow-x: hidden;
-            position: relative;
-        }
-
-        body::before,
-        body::after {
-            content: '';
-            position: fixed;
-            width: 320px;
-            height: 320px;
-            border-radius: 50%;
-            filter: blur(60px);
-            z-index: 0;
-            pointer-events: none;
-            animation: drift 14s ease-in-out infinite;
-        }
-
-        body::before {
-            top: -80px;
-            left: -80px;
-            background: rgba(255, 179, 71, 0.42);
-        }
-
-        body::after {
-            right: -100px;
-            bottom: -120px;
-            background: rgba(92, 169, 255, 0.32);
-            animation-delay: 5s;
-        }
-
-        @keyframes drift {
-            0%,
-            100% {
-                transform: translate(0, 0) scale(1);
-            }
-
-            50% {
-                transform: translate(14px, -18px) scale(1.06);
-            }
-        }
-
-        .shell {
-            width: min(980px, 100%);
-            background: rgba(255, 255, 255, 0.72);
-            border: 1px solid rgba(17, 26, 48, 0.08);
-            border-radius: 32px;
-            box-shadow: var(--shadow-strong);
-            backdrop-filter: blur(8px);
-            display: grid;
-            grid-template-columns: 1fr 1.1fr;
-            overflow: hidden;
-            position: relative;
-            z-index: 1;
-            animation: riseIn 500ms ease both;
-        }
-
-        @keyframes riseIn {
-            from {
-                opacity: 0;
-                transform: translateY(16px) scale(0.99);
-            }
-
-            to {
-                opacity: 1;
-                transform: translateY(0) scale(1);
-            }
-        }
-
-        .info-panel {
-            padding: 2.4rem 2.2rem;
-            background:
-                linear-gradient(165deg, rgba(17, 26, 48, 0.78), rgba(17, 26, 48, 0.74)),
-                var(--info-image) center center / cover no-repeat;
-            color: #ecf1ff;
-            display: flex;
-            flex-direction: column;
-            gap: 1.6rem;
-        }
-
-        .kicker {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.76rem;
-            letter-spacing: 0.14em;
-            text-transform: uppercase;
-            color: #ffd9b3;
-        }
-
-        .dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--accent-amber);
-            box-shadow: 0 0 12px rgba(255, 179, 71, 0.85);
-        }
-
-        .brand {
-            font-size: clamp(2.1rem, 5vw, 2.8rem);
-            line-height: 0.95;
-            letter-spacing: -0.04em;
-            font-weight: 700;
-        }
-
-        .brand span {
-            color: #ffc07a;
-        }
-
-        .subtitle {
-            font-size: 0.94rem;
-            line-height: 1.72;
-            color: #c9d4ef;
-            max-width: 32ch;
-        }
-
-        .steps {
-            margin-top: 0.2rem;
-            display: grid;
-            gap: 0.9rem;
-        }
-
-        .step {
-            display: grid;
-            grid-template-columns: 30px 1fr;
-            gap: 0.75rem;
-            align-items: start;
-            font-size: 0.88rem;
-            color: #d5def5;
-        }
-
-        .step-no {
-            width: 30px;
-            height: 30px;
-            border-radius: 999px;
-            display: grid;
-            place-items: center;
-            background: rgba(255, 179, 71, 0.16);
-            border: 1px solid rgba(255, 179, 71, 0.5);
-            color: #ffd7a5;
-            font-family: 'Space Mono', monospace;
-            font-size: 0.8rem;
-        }
-
-        .right-panel {
-            position: relative;
-            padding: 2.2rem;
-            background:
-                linear-gradient(rgba(248, 245, 239, 0.66), rgba(248, 245, 239, 0.72)),
-                var(--panel-image) center center / cover no-repeat;
-        }
-
-
-        .mode-tabs {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0.6rem;
-            margin-bottom: 1.4rem;
-            padding: 0.45rem;
-            background: rgba(17, 26, 48, 0.07);
-            border-radius: 999px;
-            border: 1px solid rgba(17, 26, 48, 0.08);
-        }
-
-        .tab {
-            border: none;
-            border-radius: 999px;
-            padding: 0.8rem 1rem;
-            font-family: 'Sora', sans-serif;
-            font-size: 0.86rem;
-            font-weight: 600;
-            letter-spacing: 0.02em;
-            color: #46506a;
-            background: transparent;
-            cursor: pointer;
-            transition: all 200ms ease;
-        }
-
-        .tab:hover {
-            background: rgba(17, 26, 48, 0.08);
-            color: var(--ink-900);
-        }
-
-        .tab.active {
-            color: #0a1229;
-            background: linear-gradient(145deg, #ffd9b3, #ffb347);
-            box-shadow: 0 8px 18px rgba(255, 122, 26, 0.24);
-        }
-
-        .panel-title {
-            font-size: clamp(1.25rem, 3vw, 1.55rem);
-            margin-bottom: 0.3rem;
-            color: #111a30;
-        }
-
-        .panel-note {
-            color: #4d5771;
-            font-size: 0.9rem;
-            margin-bottom: 1.2rem;
-            line-height: 1.6;
-        }
-
-        .input-group {
-            display: grid;
-            gap: 0.6rem;
-            margin-bottom: 1rem;
-        }
-
-        .status-banner {
-            display: none;
-            border-radius: 14px;
-            border: 1px solid rgba(17, 26, 48, 0.14);
-            background: rgba(255, 255, 255, 0.72);
-            padding: 0.85rem 0.95rem;
-            color: #243353;
-            font-size: 0.86rem;
-            line-height: 1.55;
-            margin-bottom: 1rem;
-        }
-
-        .status-banner.is-on {
-            display: block;
-        }
-
-        .status-banner strong {
-            font-family: 'Space Mono', monospace;
-            font-size: 0.86rem;
-            color: #0f1b38;
-        }
-
-        .label {
-            font-size: 0.78rem;
-            letter-spacing: 0.09em;
-            text-transform: uppercase;
-            color: #5d6885;
-            font-weight: 700;
-        }
-
-        input {
-            width: 100%;
-            border: 1.8px solid rgba(17, 26, 48, 0.16);
-            border-radius: var(--radius-md);
-            background: rgba(255, 255, 255, 0.86);
-            color: var(--ink-900);
-            padding: 0.98rem 1rem;
-            font-size: 1.05rem;
-            font-family: 'Space Mono', monospace;
-            transition: all 180ms ease;
-        }
-
-        input::placeholder {
-            color: #7f8aa5;
-        }
-
-        input:focus {
-            outline: none;
-            border-color: rgba(255, 122, 26, 0.7);
-            box-shadow: 0 0 0 4px rgba(255, 122, 26, 0.16);
-        }
-
-        .action-btn,
-        .reset-btn {
-            width: 100%;
-            border: none;
-            border-radius: var(--radius-md);
-            font-family: 'Sora', sans-serif;
-            font-size: 0.92rem;
-            font-weight: 700;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-            cursor: pointer;
-            transition: transform 160ms ease, box-shadow 160ms ease, opacity 160ms ease;
-        }
-
-        .action-btn {
-            padding: 1.05rem 1rem;
-            color: #121a2d;
-            background: linear-gradient(145deg, var(--accent-orange), var(--accent-amber));
-            box-shadow: 0 14px 24px rgba(255, 122, 26, 0.22);
-        }
-
-        .action-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 16px 30px rgba(255, 122, 26, 0.28);
-        }
-
-        .action-btn:disabled,
-        .reset-btn:disabled {
-            cursor: not-allowed;
-            opacity: 0.6;
-            transform: none;
-            box-shadow: none;
-        }
-
-        .result-area {
-            display: none;
-            animation: reveal 260ms ease;
-        }
-
-        @keyframes reveal {
-            from {
-                opacity: 0;
-                transform: translateY(8px);
-            }
-
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .chip {
-            display: inline-flex;
-            align-items: center;
-            padding: 0.36rem 0.75rem;
-            border-radius: 999px;
-            background: rgba(92, 169, 255, 0.18);
-            color: #23447b;
-            font-size: 0.72rem;
-            letter-spacing: 0.08em;
-            font-weight: 700;
-            text-transform: uppercase;
-            margin-bottom: 0.8rem;
-        }
-
-        .code-wrap {
-            border-radius: 16px;
-            border: 1px solid rgba(17, 26, 48, 0.14);
-            background: rgba(255, 255, 255, 0.78);
-            padding: 1.3rem 1.1rem;
-            margin-bottom: 1rem;
-            box-shadow: var(--shadow-soft);
-        }
-
-        .code-text {
-            font-family: 'Space Mono', monospace;
-            font-size: clamp(1.55rem, 4vw, 2rem);
-            letter-spacing: 0.25em;
-            font-weight: 700;
-            text-align: center;
-            color: #0f1b38;
-        }
-
-        .qr-display {
-            width: 100%;
-            background: #fff;
-            border-radius: 16px;
-            padding: 1rem;
-            border: 1px solid rgba(17, 26, 48, 0.14);
-            margin-bottom: 1rem;
-            box-shadow: var(--shadow-soft);
-            display: grid;
-            place-items: center;
-        }
-
-        .qr-display img {
-            display: block;
-            width: min(280px, 100%);
-            height: auto;
-        }
-
-        .instructions {
-            border-radius: 14px;
-            border: 1px solid rgba(17, 26, 48, 0.12);
-            background: rgba(255, 255, 255, 0.62);
-            padding: 0.9rem 1rem;
-            font-size: 0.83rem;
-            line-height: 1.6;
-            color: #314161;
-            margin-bottom: 1rem;
-        }
-
-        .instructions strong {
-            color: #121f3f;
-        }
-
-        .reset-btn {
-            padding: 0.9rem 1rem;
-            color: #1c2742;
-            background: rgba(17, 26, 48, 0.09);
-            border: 1px solid rgba(17, 26, 48, 0.14);
-        }
-
-        .reset-btn:hover {
-            transform: translateY(-1px);
-            background: rgba(17, 26, 48, 0.14);
-        }
-
-        .is-hidden {
-            display: none;
-        }
-
-        .loading {
-            width: 18px;
-            height: 18px;
-            border: 2px solid rgba(18, 26, 45, 0.2);
-            border-top-color: #111a30;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-            display: inline-block;
-            vertical-align: middle;
-            margin-right: 0.45rem;
-        }
-
-        @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
-        }
-
-        @media (max-width: 900px) {
-            .shell {
-                grid-template-columns: 1fr;
-            }
-
-            body {
-                background-attachment: scroll;
-            }
-
-            .info-panel {
-                border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-                padding: 2rem 1.4rem;
-            }
-
-            .right-panel {
-                padding: 1.5rem 1.1rem;
-            }
-        }
-
-        @media (max-width: 520px) {
-            body {
-                padding: 0.7rem;
-            }
-
-            .shell {
-                border-radius: 20px;
-            }
-
-            .mode-tabs {
-                gap: 0.45rem;
-                padding: 0.35rem;
-            }
-
-            .tab {
-                padding: 0.65rem 0.55rem;
-                font-size: 0.74rem;
-            }
-
-            .code-text {
-                letter-spacing: 0.15em;
-            }
-        }
-
-        @media (prefers-reduced-data: reduce) {
-            :root {
-                --page-bg-image: none;
-                --info-image: none;
-                --panel-image: none;
-            }
-
-            body {
-                background:
-                    linear-gradient(135deg, rgba(12, 17, 31, 0.86), rgba(12, 17, 31, 0.78)),
-                    radial-gradient(circle at 10% 10%, rgba(255, 179, 71, 0.18), transparent 60%),
-                    radial-gradient(circle at 90% 80%, rgba(92, 169, 255, 0.14), transparent 55%);
-            }
-        }
-    </style>
-</head>
-
-<body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Mantra Pair</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700&family=Space+Mono:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="preload" as="image" href="/assets/ov9irq.jpg" />
+    <link rel="preload" as="image" href="/assets/q0q02r.jpg" />
+    <link rel="preload" as="image" href="/assets/hfz2c3.jpg" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+
+  <body>
     <main class="shell">
-        <section class="info-panel">
-            <div class="kicker">
-                <span class="dot"></span>
-                Pair Service Online
+      <section class="info">
+        <div class="kicker"><span class="dot"></span>Pair service</div>
+        <h1 class="brand">Mantra <span>Pair</span></h1>
+        <p class="sub">
+          Link your WhatsApp account and receive your session in your own WhatsApp chat.
+        </p>
+
+        <div class="steps">
+          <div class="step"><div class="n">01</div><div>Select Pairing Code or QR.</div></div>
+          <div class="step"><div class="n">02</div><div>Open WhatsApp, go to Linked Devices.</div></div>
+          <div class="step"><div class="n">03</div><div>Finish linking, then check your chat for the session.</div></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="tabs" role="tablist" aria-label="Pairing mode">
+          <button class="tab active" id="tab-code" type="button" role="tab" aria-selected="true">
+            Pairing Code
+          </button>
+          <button class="tab" id="tab-qr" type="button" role="tab" aria-selected="false">
+            QR Scan
+          </button>
+        </div>
+
+        <div class="status" id="status" aria-live="polite">
+          <div><span class="label">Status</span> <span id="statusText">Idle</span></div>
+          <div class="hint" id="statusHint"></div>
+        </div>
+
+        <div id="mode-code" class="mode">
+          <h2>Pair by phone number</h2>
+          <p class="note">Enter full number with country code. Digits only.</p>
+
+          <label class="field">
+            <span>Phone</span>
+            <input id="phone" inputmode="numeric" maxlength="15" placeholder="254XXXXXXXXX" />
+          </label>
+
+          <button class="primary" id="btnCode" type="button">
+            <span class="btnText" id="btnCodeText">Generate Pairing Code</span>
+          </button>
+
+          <div class="result" id="resultCode">
+            <div class="chip">Use this in WhatsApp</div>
+            <div class="codeBox"><div class="code" id="pairCode">----</div></div>
+            <div class="how">
+              <strong>Protocol</strong><br />
+              1. WhatsApp -> Linked Devices<br />
+              2. Link a Device -> Link with phone number<br />
+              3. Enter this code<br />
+              4. Check your own chat for the session
             </div>
+            <button class="secondary" id="btnResetA" type="button">Start New Session</button>
+          </div>
+        </div>
 
-            <h1 class="brand">Mantra <span>Pair</span></h1>
+        <div id="mode-qr" class="mode is-hidden">
+          <h2>Pair by QR</h2>
+          <p class="note">Generate a QR and scan it from WhatsApp Linked Devices.</p>
 
-            <p class="subtitle">
-                Link your WhatsApp account and get a fresh session in one flow. Choose phone-number pairing or QR and
-                follow the quick protocol below.
-            </p>
+          <button class="primary" id="btnQr" type="button">
+            <span class="btnText" id="btnQrText">Generate QR Code</span>
+          </button>
 
-            <div class="steps">
-                <div class="step">
-                    <div class="step-no">01</div>
-                    <div>Select your method: Pairing Code or QR.</div>
-                </div>
-                <div class="step">
-                    <div class="step-no">02</div>
-                    <div>Complete linking from WhatsApp Linked Devices.</div>
-                </div>
-                <div class="step">
-                    <div class="step-no">03</div>
-                    <div>Check your own WhatsApp messages for the generated session ID.</div>
-                </div>
+          <div class="result" id="resultQr">
+            <div class="chip">Scan from WhatsApp</div>
+            <div class="qrBox" id="qrBox"></div>
+            <div class="how">
+              <strong>Protocol</strong><br />
+              1. WhatsApp -> Linked Devices<br />
+              2. Link a Device<br />
+              3. Scan this QR<br />
+              4. Check your own chat for the session
             </div>
-        </section>
-
-        <section class="right-panel">
-            <div class="mode-tabs">
-                <button class="tab active" id="tab-code" type="button" onclick="switchTab('code')">Pairing Code</button>
-                <button class="tab" id="tab-qr" type="button" onclick="switchTab('qr')">QR Scan</button>
-            </div>
-
-            <div class="status-banner" id="statusBanner">
-                <div><strong>Status</strong>: <span id="statusText">Idle</span></div>
-                <div id="statusHint" style="margin-top:0.35rem;color:#4d5771;"></div>
-            </div>
-
-            <div id="method-code">
-                <h2 class="panel-title">Pair by Phone Number</h2>
-                <p class="panel-note">Enter your full phone number with country code. Numbers only.</p>
-
-                <div class="input-group">
-                    <label class="label" for="phone">Phone Number</label>
-                    <input type="text" id="phone" placeholder="254XXXXXXXXX" maxlength="15" inputmode="numeric">
-                </div>
-
-                <button class="action-btn" id="code-btn" type="button" onclick="getPairingCode()">
-                    <span id="btn-text">Generate Pairing Code</span>
-                </button>
-            </div>
-
-            <div id="method-qr" class="is-hidden">
-                <h2 class="panel-title">Pair by QR</h2>
-                <p class="panel-note">Generate a temporary QR code and scan it from WhatsApp Linked Devices. The QR can refresh automatically.</p>
-
-                <button class="action-btn" id="qr-btn" type="button" onclick="getQRCode()">
-                    <span id="qr-btn-text">Generate QR Code</span>
-                </button>
-            </div>
-
-            <div id="result-code" class="result-area">
-                <span class="chip">Use this in WhatsApp</span>
-                <div class="code-wrap">
-                    <div class="code-text" id="code">----</div>
-                </div>
-
-                <div class="instructions">
-                    <strong>Protocol:</strong><br>
-                    1. Open WhatsApp -> Linked Devices.<br>
-                    2. Tap Link a Device -> Link with phone number.<br>
-                    3. Enter the code shown above.<br>
-                    4. Check your own chat for the session ID.
-                </div>
-
-                <button class="reset-btn" type="button" onclick="location.reload()">Start New Session</button>
-            </div>
-
-            <div id="result-qr" class="result-area">
-                <span class="chip">Scan from WhatsApp</span>
-                <div class="qr-display" id="qr-container"></div>
-
-                <div class="instructions">
-                    <strong>Protocol:</strong><br>
-                    1. Open WhatsApp -> Linked Devices.<br>
-                    2. Tap Link a Device.<br>
-                    3. Scan the QR code shown above.<br>
-                    4. Check your own chat for the session ID.
-                </div>
-
-                <button class="reset-btn" type="button" onclick="location.reload()">Start New Session</button>
-            </div>
-        </section>
+            <button class="secondary" id="btnResetB" type="button">Start New Session</button>
+          </div>
+        </div>
+      </section>
     </main>
-
-    <script>
-        let currentMethod = 'code';
-        const REQUEST_TIMEOUT_MS = 130000;
-        let currentSessionId = null;
-        let eventSource = null;
-
-        function switchTab(method) {
-            currentMethod = method;
-
-            document.getElementById('tab-code').classList.toggle('active', method === 'code');
-            document.getElementById('tab-qr').classList.toggle('active', method === 'qr');
-
-            document.getElementById('method-code').classList.toggle('is-hidden', method !== 'code');
-            document.getElementById('method-qr').classList.toggle('is-hidden', method !== 'qr');
-
-            document.getElementById('result-code').style.display = 'none';
-            document.getElementById('result-qr').style.display = 'none';
-
-            setStatus('Idle', '');
-            teardownEvents();
-        }
-
-        function setCodeLoading(isLoading) {
-            const btn = document.getElementById('code-btn');
-            const label = document.getElementById('btn-text');
-
-            btn.disabled = isLoading;
-            label.innerHTML = isLoading ? '<span class="loading"></span>Connecting...' : 'Generate Pairing Code';
-        }
-
-        function setQrLoading(isLoading) {
-            const btn = document.getElementById('qr-btn');
-            const label = document.getElementById('qr-btn-text');
-
-            btn.disabled = isLoading;
-            label.innerHTML = isLoading ? '<span class="loading"></span>Generating...' : 'Generate QR Code';
-        }
-
-        function setStatus(text, hint) {
-            const banner = document.getElementById('statusBanner');
-            const statusText = document.getElementById('statusText');
-            const statusHint = document.getElementById('statusHint');
-
-            const show = Boolean(text && text !== 'Idle');
-            banner.classList.toggle('is-on', show);
-            statusText.textContent = text || 'Idle';
-            statusHint.textContent = hint || '';
-        }
-
-        async function safeJson(res) {
-            try {
-                return await res.json();
-            } catch (e) {
-                return {};
-            }
-        }
-
-        async function fetchWithTimeout(url, init) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-            try {
-                return await fetch(url, {
-                    ...(init || {}),
-                    signal: controller.signal,
-                    credentials: (init && init.credentials) ? init.credentials : 'same-origin',
-                    cache: 'no-store'
-                });
-            } finally {
-                clearTimeout(timeoutId);
-            }
-        }
-
-        function teardownEvents() {
-            if (eventSource) {
-                try { eventSource.close(); } catch (e) { }
-                eventSource = null;
-            }
-            currentSessionId = null;
-        }
-
-        function listenToSession(id) {
-            teardownEvents();
-            currentSessionId = id;
-
-            eventSource = new EventSource(`/pair/events/${encodeURIComponent(id)}`);
-
-            eventSource.addEventListener('status', (ev) => {
-                try {
-                    const data = JSON.parse(ev.data || '{}');
-                    const status = data.status || 'working';
-                    let hint = '';
-                    if (status === 'requesting_code') hint = 'Waiting for pairing code...';
-                    if (status === 'waiting_qr') hint = 'Waiting for QR from WhatsApp...';
-                    if (status === 'open') hint = 'Connected. Sending session to your WhatsApp...';
-                    if (status === 'retrying') hint = `Retrying (${data.retry || 0}/${data.maxRetries || 0})...`;
-                    setStatus(status, hint);
-                } catch (e) { }
-            });
-
-            eventSource.addEventListener('code', (ev) => {
-                const data = JSON.parse(ev.data || '{}');
-                if (!data.code) return;
-                document.getElementById('method-code').style.display = 'none';
-                document.getElementById('result-code').style.display = 'block';
-                document.getElementById('code').innerText = data.code;
-                setStatus('code_ready', 'Enter this code in WhatsApp -> Linked Devices.');
-            });
-
-            eventSource.addEventListener('qr', (ev) => {
-                const data = JSON.parse(ev.data || '{}');
-                if (!data.qr) return;
-                document.getElementById('method-qr').style.display = 'none';
-                document.getElementById('result-qr').style.display = 'block';
-                document.getElementById('qr-container').innerHTML = `<img src="${data.qr}" alt="WhatsApp QR Code">`;
-                setStatus('qr_ready', 'Scan this QR from WhatsApp -> Linked Devices.');
-            });
-
-            eventSource.addEventListener('exported', () => {
-                setStatus('done', 'Session was sent to your WhatsApp chat.');
-            });
-
-            eventSource.addEventListener('error', (ev) => {
-                try {
-                    const data = JSON.parse(ev.data || '{}');
-                    alert(data.message || 'Session error.');
-                } catch (e) {
-                    alert('Session error.');
-                } finally {
-                    teardownEvents();
-                    setStatus('Idle', '');
-                    setCodeLoading(false);
-                    setQrLoading(false);
-                }
-            });
-        }
-
-        async function getPairingCode() {
-            const phone = document.getElementById('phone').value.replace(/[^0-9]/g, '');
-
-            if (phone.length < 10) {
-                alert('Invalid phone number. Use at least 10 digits with country code.');
-                return;
-            }
-
-            setCodeLoading(true);
-            setStatus('starting', 'Preparing secure session...');
-
-            try {
-                const res = await fetchWithTimeout('/pair', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ method: 'code', phone })
-                });
-                const data = await safeJson(res);
-
-                if (res.ok && data.id) {
-                    listenToSession(data.id);
-                    return;
-                }
-
-                alert(data.error || 'Connection failed while generating pairing code.');
-            } catch (e) {
-                console.error(e);
-                alert(e && e.message ? e.message : 'Connection timeout. Please try again.');
-            } finally {
-                setCodeLoading(false);
-            }
-        }
-
-        async function getQRCode() {
-            setQrLoading(true);
-            setStatus('starting', 'Preparing secure session...');
-
-            try {
-                const res = await fetchWithTimeout('/pair', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ method: 'qr' })
-                });
-                const data = await safeJson(res);
-
-                if (res.ok && data.id) {
-                    listenToSession(data.id);
-                    return;
-                }
-
-                alert(data.error || 'QR generation failed.');
-            } catch (e) {
-                console.error(e);
-                alert(e && e.message ? e.message : 'Connection timeout. Please try again.');
-            } finally {
-                setQrLoading(false);
-            }
-        }
-    </script>
-</body>
-
+  </body>
 </html>
+
