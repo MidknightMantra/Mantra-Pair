@@ -330,6 +330,16 @@ app.use(helmet({ crossOriginEmbedderPolicy: false }));
 app.use(express.json({ limit: '128kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Railway (and most PaaS) sit behind a reverse proxy and set X-Forwarded-For.
+// express-rate-limit expects trust proxy to be enabled in that setup.
+const TRUST_PROXY = process.env.TRUST_PROXY;
+if (TRUST_PROXY !== undefined && TRUST_PROXY !== '') {
+  const n = Number(TRUST_PROXY);
+  app.set('trust proxy', Number.isFinite(n) ? n : true);
+} else {
+  app.set('trust proxy', 1);
+}
+
 app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), activeSessions: sessions.size });
 });
