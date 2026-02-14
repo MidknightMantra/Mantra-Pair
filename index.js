@@ -238,17 +238,28 @@ async function startPairing(s) {
         if (!selfJid) throw new Error('Could not resolve self JID');
 
         for (const t of tokens) {
-          await sock.sendMessage(selfJid, { text: t });
+          // Send the raw token in a copy-friendly block.
+          await sock.sendMessage(selfJid, { text: `\`\`\`\n${t}\n\`\`\`` });
           await delay(300);
         }
 
+        const tokenHint = EXPORT_ENCRYPTED ? 'MantraEnc~...' : 'Mantra~...';
+        const pairedAt = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+
         await sock.sendMessage(selfJid, {
           text:
-            '╭━━━━━━━━━━━━━━━╮\n' +
-            '│ *MANTRA CONNECTED* ✅\n' +
-            '╰━━━━━━━━━━━━━━━╯\n\n' +
-            '✓ Session sent above\n' +
-            '✓ Keep it private and secure\n\n' +
+            '*MANTRA PAIR COMPLETE* ✅\n' +
+            `Paired: ${pairedAt}\n\n` +
+            '*What you received*\n' +
+            `- Session token (starts with ${tokenHint})\n\n` +
+            '*Next steps*\n' +
+            '1) Copy the token message above\n' +
+            '2) Paste it into your bot config as the session value\n' +
+            '3) Start/restart the bot\n\n' +
+            '*Security*\n' +
+            '- Do NOT share this token\n' +
+            '- Anyone with it can control this WhatsApp session\n' +
+            '- To revoke: WhatsApp -> Linked devices -> Log out\n\n' +
             '_Powered by Mantra Inc_',
         });
 
