@@ -94,16 +94,31 @@
     });
 
     es.addEventListener('error', (ev) => {
+      let message = 'Session error.';
       try {
         const d = JSON.parse(ev.data || '{}');
-        alert(d.message || 'Session error.');
-      } catch (_) {
-        alert('Session error.');
-      } finally {
-        teardown();
-        setLoading('code', false);
-        setLoading('qr', false);
+        message = d.message || message;
+      } catch (_) {}
+
+      teardown();
+      setLoading('code', false);
+      setLoading('qr', false);
+
+      const looksLikeCodeUnavailable =
+        /(\b503\b|unavailable|temporarily unavailable|phone-number pairing|forbidden|\b403\b)/i.test(message);
+
+      if (mode === 'code' && looksLikeCodeUnavailable) {
+        const ok = window.confirm(
+          `${message}\n\nSwitch to QR Scan instead?`
+        );
+        if (ok) {
+          setMode('qr');
+          setStatus('Idle', 'Switched to QR Scan. Tap "Generate QR Code".');
+          return;
+        }
       }
+
+      alert(message);
     });
   }
 
@@ -194,4 +209,3 @@
     setMode(mode);
   });
 })();
-
