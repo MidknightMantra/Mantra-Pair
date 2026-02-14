@@ -113,6 +113,16 @@ function isRetryableDisconnectReason(reason) {
   return retryable.includes(reason);
 }
 
+function statusCodeFromError(err) {
+  return (
+    err?.output?.statusCode ??
+    err?.data?.statusCode ??
+    err?.statusCode ??
+    err?.response?.status ??
+    undefined
+  );
+}
+
 // Session store (in-memory). Railway restarts wipe sessions; that is fine for pairing.
 // id -> session
 const sessions = new Map();
@@ -307,7 +317,7 @@ async function startPairing(s) {
 
   if (s.method === 'code') {
     emit(s, 'status', { status: 'requesting_code' });
-    await delay(4500);
+    await delay(5000);
     if (s.sock !== sock) return;
     try {
       const raw = await sock.requestPairingCode(s.phone);
@@ -316,7 +326,31 @@ async function startPairing(s) {
       emit(s, 'code', { code: formatted, expiresIn: 60 });
       touchIdle(s);
     } catch (e) {
-      emit(s, 'session_error', { message: `Failed to generate pairing code: ${e.message}` });
+      const code = statusCodeFromError(e);
+      logger.warn({ id: s.id, code, message: e?.message }, 'requestPairingCode failed');
+
+      // If WhatsApp asks us to restart / transient network error, restart the socket flow.
+      if (isRetryableDisconnectReason(code) && (s.retries || 0) < MAX_RETRIES) {
+        s.retries = (s.retries || 0) + 1;
+        emit(s, 'status', { status: 'retrying', retry: s.retries, maxRetries: MAX_RETRIES });
+        await endSocketOnly(s);
+        const backoff = Math.min(RETRY_DELAY_MAX_MS, RETRY_DELAY_MS * s.retries);
+        await delay(backoff);
+        if (!sessions.has(s.id)) return;
+        startPairing(s).catch((err) => {
+          logger.error({ err, id: s.id }, 'retry startPairing failed (after requestPairingCode)');
+          emit(s, 'session_error', { message: 'Retry failed. Try QR instead.' });
+          cleanupSession(s).catch(() => {});
+        });
+        return;
+      }
+
+      if (code === DisconnectReason.forbidden) {
+        emit(s, 'session_error', { message: "Pairing code isn't available right now. Use QR Scan." });
+        return;
+      }
+
+      emit(s, 'session_error', { message: `Failed to generate pairing code: ${e?.message || 'Unknown error'}` });
     }
   } else {
     emit(s, 'status', { status: 'waiting_qr' });
